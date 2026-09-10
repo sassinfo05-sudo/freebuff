@@ -111,6 +111,58 @@ async def list_provider_models(user: str = Depends(require_devstudio_access)):
     return {"providers": provider_registry.known_provider_names(), "models": by_provider}
 
 
+class ProviderTestRequest(BaseModel):
+    provider: str
+    model: str
+
+
+@router.post("/providers/test")
+async def test_provider_model(body: ProviderTestRequest, user: str = Depends(require_devstudio_write)):
+    """Make one real, minimal generate() call against a specific provider+model using whatever
+    credentials are currently saved (never the unsaved contents of a settings form) — this is the
+    only honest way to answer "does this actually work", per CLAUDE.md's evidence rules. Always
+    returns 200 with a structured ok/false result (mirrors github/whoami's style) rather than an
+    HTTP error, so the frontend can render every outcome — not configured, not implemented (the
+    Emergent stub), or a real failure (bad model id, auth error, network) — without exception
+    handling on every call site."""
+    import time
+
+    from .providers.base import ProviderNotConfigured, ProviderNotImplemented
+
+    registry = await settings_service.build_model_registry()
+    if body.provider not in provider_registry.known_provider_names():
+        raise HTTPException(404, f"Unknown provider: {body.provider}")
+
+    t0 = time.monotonic()
+    try:
+        provider = registry.get(body.provider)
+        result = await provider.generate(
+            system="You are a connectivity test for a developer tool. Reply with exactly one word.",
+            prompt="Reply with exactly the word: OK",
+            model=body.model,
+            max_tokens=8,
+            temperature=0.0,
+        )
+        return {
+            "ok": True,
+            "provider": body.provider,
+            "model": body.model,
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+            "response_text": (result.text or "").strip()[:200],
+            "usage": {"input_tokens": result.usage.input_tokens, "output_tokens": result.usage.output_tokens},
+        }
+    except ProviderNotConfigured as e:
+        return {"ok": False, "provider": body.provider, "model": body.model,
+                 "error_type": "not_configured", "detail": str(e)}
+    except ProviderNotImplemented as e:
+        return {"ok": False, "provider": body.provider, "model": body.model,
+                 "error_type": "not_implemented", "detail": str(e)}
+    except Exception as e:  # noqa: BLE001 — a failed test call is a result to display, not a 500
+        return {"ok": False, "provider": body.provider, "model": body.model,
+                 "error_type": "error", "detail": str(e)[:500],
+                 "latency_ms": int((time.monotonic() - t0) * 1000)}
+
+
 # --- Settings / secrets --------------------------------------------------------------------
 
 class SecretBody(BaseModel):

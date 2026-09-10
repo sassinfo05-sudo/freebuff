@@ -39,6 +39,8 @@ export const devstudio = {
     api.put(`${base}/agents/config/${role}`, body),
   applyPreset: (preset: string) => api.post(`${base}/agents/preset/${preset}`),
   providerModels: () => api.get(`${base}/providers/models`),
+  testProviderModel: (provider: string, model: string) =>
+    api.post(`${base}/providers/test`, { provider, model }),
 
   createTask: (body: Record<string, unknown>) => api.post(`${base}/tasks`, body),
   listTasks: (projectId?: string | null) => api.get(`${base}/tasks`, { params: { project_id: projectId } }),

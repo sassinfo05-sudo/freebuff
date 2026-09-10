@@ -419,16 +419,25 @@ const SECRET_FIELDS: { key: string; label: string; placeholder: string; group: s
 ];
 const SECRET_GROUPS = ["GitHub", "Native API keys", "Amazon Bedrock", "Gemini Enterprise Agent Platform", "Emergent"];
 
+type TestOutcome = "idle" | "testing" | "ok" | "error" | "not_configured" | "not_implemented";
+type TestState = { state: TestOutcome; detail?: string; latency_ms?: number };
+
 export function SettingsPanel() {
   const [caps, setCaps] = useState<any[]>([]);
   const [secretsConfigured, setSecretsConfigured] = useState<Record<string, boolean>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [models, setModels] = useState<Record<string, { id: string; label: string }[]>>({});
+  const [providers, setProviders] = useState<string[]>([]);
+  const [testStatus, setTestStatus] = useState<Record<string, TestState>>({});
 
   async function load() {
     const { data } = await devstudio.capabilities();
     setCaps(data.capabilities);
     const s = await devstudio.getSettings();
     setSecretsConfigured(s.data.secrets_configured);
+    const m = await devstudio.providerModels();
+    setModels(m.data.models);
+    setProviders(m.data.providers);
   }
   useEffect(() => {
     load();
@@ -441,6 +450,30 @@ export function SettingsPanel() {
     toast.success("Saved. It is encrypted at rest and never shown again.");
     setDraft((d) => ({ ...d, [name]: "" }));
     load();
+  }
+
+  async function testModel(provider: string, model: string) {
+    const key = `${provider}:${model}`;
+    setTestStatus((t) => ({ ...t, [key]: { state: "testing" } }));
+    try {
+      const { data } = await devstudio.testProviderModel(provider, model);
+      if (data.ok) {
+        setTestStatus((t) => ({
+          ...t,
+          [key]: { state: "ok", detail: data.response_text, latency_ms: data.latency_ms },
+        }));
+      } else {
+        setTestStatus((t) => ({
+          ...t,
+          [key]: { state: (data.error_type as TestOutcome) || "error", detail: data.detail, latency_ms: data.latency_ms },
+        }));
+      }
+    } catch (e: any) {
+      setTestStatus((t) => ({
+        ...t,
+        [key]: { state: "error", detail: e?.response?.data?.detail || "Request failed" },
+      }));
+    }
   }
 
   return (
@@ -518,6 +551,58 @@ export function SettingsPanel() {
               AWS_REGION, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION,
               GOOGLE_APPLICATION_CREDENTIALS_JSON) override these if set.
             </div>
+          </div>
+        </div>
+        <div>
+          <div className="text-sm font-medium text-white/80 mb-2">Test providers & models</div>
+          <div className="text-[11px] text-white/40 mb-3">
+            Makes one real, minimal request per click using whatever credentials are currently
+            saved above — not unsaved draft values. Useful for confirming a Bedrock or Gemini
+            Enterprise model ID actually resolves before pointing a role at it.
+          </div>
+          <div className="space-y-4">
+            {providers.map((p) => (
+              <div key={p} className="space-y-1.5">
+                <div className="text-[11px] uppercase tracking-wide text-white/40">
+                  {PROVIDER_LABELS[p] || p}
+                </div>
+                {!(models[p] || []).length && (
+                  <div className="text-[11px] text-white/30">No models listed.</div>
+                )}
+                {(models[p] || []).map((m) => {
+                  const key = `${p}:${m.id}`;
+                  const status = testStatus[key] || { state: "idle" as TestOutcome };
+                  return (
+                    <div key={m.id} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-white/70 flex-1 truncate">{m.label}</span>
+                        {status.state === "ok" && (
+                          <Badge className="border-emerald-500/40 text-emerald-300">
+                            ok{status.latency_ms != null ? ` · ${status.latency_ms}ms` : ""}
+                          </Badge>
+                        )}
+                        {status.state === "error" && (
+                          <Badge className="border-red-500/40 text-red-300">failed</Badge>
+                        )}
+                        {status.state === "not_configured" && (
+                          <Badge className="border-amber-500/40 text-amber-300">not configured</Badge>
+                        )}
+                        {status.state === "not_implemented" && (
+                          <Badge className="border-white/20 text-white/40">stub</Badge>
+                        )}
+                        <Button size="sm" variant="outline" disabled={status.state === "testing"}
+                          onClick={() => testModel(p, m.id)}>
+                          {status.state === "testing" ? "Testing…" : "Test"}
+                        </Button>
+                      </div>
+                      {status.detail && status.state !== "ok" && (
+                        <div className="text-white/40 mt-1 truncate" title={status.detail}>{status.detail}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         </div>
       </div>

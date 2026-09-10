@@ -68,6 +68,13 @@ everyone else uses. See `app/devstudio/providers/bedrock_provider.py` and
 resolves and, for Bedrock, why its model IDs need confirming against the AWS console before
 production use.
 
+Settings → "Test providers & models" gives every provider/model in the catalog its own **Test**
+button — one real, minimal request (`POST /api/devstudio/providers/test`) against whatever
+credentials are currently saved, never unsaved form input. It reports exactly one of four outcomes
+(never a fake pass): `ok` with latency, `not configured` (no credentials), `stub` (Emergent), or a
+real failure with the provider's own error text — this is also the fastest way to confirm a
+Bedrock/Gemini Enterprise model ID actually resolves before pointing a role at it.
+
 ## Running it
 
 ### Backend
