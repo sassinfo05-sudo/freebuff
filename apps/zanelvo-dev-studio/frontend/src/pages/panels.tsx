@@ -241,11 +241,17 @@ export function GitHubPanel() {
 
 // --- Settings ----------------------------------------------------------------------------
 
+const SECRET_FIELDS: { key: string; label: string; placeholder: string }[] = [
+  { key: "github_pat", label: "GitHub Personal Access Token", placeholder: "ghp_…" },
+  { key: "anthropic_api_key", label: "Anthropic API Key", placeholder: "sk-ant-…" },
+  { key: "openai_api_key", label: "OpenAI API Key", placeholder: "sk-…" },
+  { key: "gemini_api_key", label: "Gemini API Key", placeholder: "AIza…" },
+];
+
 export function SettingsPanel() {
   const [caps, setCaps] = useState<any[]>([]);
   const [secretsConfigured, setSecretsConfigured] = useState<Record<string, boolean>>({});
-  const [githubPat, setGithubPat] = useState("");
-  const [anthropicKey, setAnthropicKey] = useState("");
+  const [draft, setDraft] = useState<Record<string, string>>({});
 
   async function load() {
     const { data } = await devstudio.capabilities();
@@ -257,11 +263,12 @@ export function SettingsPanel() {
     load();
   }, []);
 
-  async function saveSecret(name: string, value: string, clear: (v: string) => void) {
+  async function saveSecret(name: string) {
+    const value = draft[name];
     if (!value) return;
     await devstudio.setSecret(name, value);
     toast.success("Saved. It is encrypted at rest and never shown again.");
-    clear("");
+    setDraft((d) => ({ ...d, [name]: "" }));
     load();
   }
 
@@ -287,33 +294,26 @@ export function SettingsPanel() {
         <div>
           <div className="text-sm font-medium text-white/80 mb-2">Secrets</div>
           <div className="space-y-3">
-            <div>
-              <label className="text-xs text-white/50">
-                GitHub Personal Access Token{" "}
-                {secretsConfigured.github_pat && <Badge className="ml-1 bg-emerald-500/20 text-emerald-300 border-0">configured</Badge>}
-              </label>
-              <div className="flex gap-1.5 mt-1">
-                <Input type="password" value={githubPat} onChange={(e) => setGithubPat(e.target.value)} placeholder="ghp_…" />
-                <Button size="sm" onClick={() => saveSecret("github_pat", githubPat, setGithubPat)}>
-                  Save
-                </Button>
+            {SECRET_FIELDS.map((f) => (
+              <div key={f.key}>
+                <label className="text-xs text-white/50">
+                  {f.label}{" "}
+                  {secretsConfigured[f.key] && (
+                    <Badge className="ml-1 bg-emerald-500/20 text-emerald-300 border-0">configured</Badge>
+                  )}
+                </label>
+                <div className="flex gap-1.5 mt-1">
+                  <Input type="password" value={draft[f.key] || ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                    placeholder={f.placeholder} />
+                  <Button size="sm" onClick={() => saveSecret(f.key)}>Save</Button>
+                </div>
               </div>
-            </div>
-            <div>
-              <label className="text-xs text-white/50">
-                Anthropic API Key{" "}
-                {secretsConfigured.anthropic_api_key && <Badge className="ml-1 bg-emerald-500/20 text-emerald-300 border-0">configured</Badge>}
-              </label>
-              <div className="flex gap-1.5 mt-1">
-                <Input type="password" value={anthropicKey} onChange={(e) => setAnthropicKey(e.target.value)} placeholder="sk-ant-…" />
-                <Button size="sm" onClick={() => saveSecret("anthropic_api_key", anthropicKey, setAnthropicKey)}>
-                  Save
-                </Button>
-              </div>
-            </div>
+            ))}
             <div className="text-[11px] text-white/40">
               Secrets are encrypted at rest and never re-displayed. Environment variables
-              (ANTHROPIC_API_KEY, DEVSTUDIO_GITHUB_TOKEN) override these if set.
+              (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEVSTUDIO_GITHUB_TOKEN) override
+              these if set.
             </div>
           </div>
         </div>

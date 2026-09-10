@@ -1,9 +1,11 @@
-# OPTIONAL runtime dependencies. Both are lazily imported (see app/devstudio/providers/anthropic_provider.py
-# and app/devstudio/services/browser_service.py) so the app boots and its core tests pass without them.
-# Install this file in the runtime that actually runs agents / browser QA:
+# OPTIONAL runtime dependencies. All are lazily imported (see app/devstudio/providers/*_provider.py
+# and app/devstudio/services/browser_service.py) so the app boots and its core tests pass without
+# any of them installed. Install this file in the runtime that actually runs agents / browser QA:
 #
 #   pip install -r requirements-devstudio.txt
 #   python -m playwright install --with-deps chromium   # first time only, for browser QA
 #
 anthropic==0.69.0
+openai==1.109.1
+google-genai==1.75.0
 playwright==1.55.0

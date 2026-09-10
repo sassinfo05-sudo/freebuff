@@ -1,8 +1,8 @@
 """SettingsService + SecretsService.
 
-Secrets (GitHub PAT, Anthropic API key, Emergent Universal Key) are stored encrypted-at-rest in
-Mongo using the app's existing `services/secretbox.py` (Fernet), never in plaintext, never logged,
-never returned to the client in `read()` responses (only `configured: true/false`).
+Secrets (GitHub PAT, provider API keys) are stored encrypted-at-rest in Mongo using the app's
+existing `services/secretbox.py` (Fernet), never in plaintext, never logged, never returned to the
+client in `read()` responses (only `configured: true/false`).
 """
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from ...services import secretbox
 from ..models import ApplicationSettings
 from ..providers.registry import ModelRegistry
 
-_SECRET_KEYS = ("github_pat", "anthropic_api_key", "emergent_universal_key")
+_SECRET_KEYS = ("github_pat", "anthropic_api_key", "openai_api_key", "gemini_api_key",
+                 "emergent_universal_key")
 
 
 async def get_settings() -> ApplicationSettings:
@@ -50,6 +51,8 @@ async def get_secret(name: str) -> Optional[str]:
     env_map = {
         "github_pat": "DEVSTUDIO_GITHUB_TOKEN",
         "anthropic_api_key": "ANTHROPIC_API_KEY",
+        "openai_api_key": "OPENAI_API_KEY",
+        "gemini_api_key": "GEMINI_API_KEY",
         "emergent_universal_key": "EMERGENT_UNIVERSAL_KEY",
     }
     env_val = os.environ.get(env_map.get(name, ""), "")
@@ -71,6 +74,8 @@ async def build_model_registry() -> ModelRegistry:
     """Assemble a ModelRegistry with whatever provider credentials are currently configured."""
     keys = {
         "anthropic": await get_secret("anthropic_api_key"),
+        "openai": await get_secret("openai_api_key"),
+        "gemini": await get_secret("gemini_api_key"),
         "emergent": await get_secret("emergent_universal_key"),
     }
     return ModelRegistry(keys)

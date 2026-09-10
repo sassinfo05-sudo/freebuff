@@ -81,6 +81,10 @@ async def capabilities(user: str = Depends(require_devstudio_access)):
     secrets = await settings_service.secrets_status()
     out.append({"name": "anthropic_provider", "available": secrets["anthropic_api_key"],
                  "detail": None if secrets["anthropic_api_key"] else "ANTHROPIC_API_KEY not configured"})
+    out.append({"name": "openai_provider", "available": secrets["openai_api_key"],
+                 "detail": None if secrets["openai_api_key"] else "OPENAI_API_KEY not configured"})
+    out.append({"name": "gemini_provider", "available": secrets["gemini_api_key"],
+                 "detail": None if secrets["gemini_api_key"] else "GEMINI_API_KEY not configured"})
     out.append({"name": "emergent_provider", "available": False,
                  "detail": "Intentional stub — see docs/EMERGENT_INTEGRATION_HANDOFF.md"})
     return {"capabilities": out}

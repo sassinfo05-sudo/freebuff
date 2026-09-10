@@ -5,12 +5,21 @@ tool: connect a GitHub repo, describe work in natural language, and a Supervisor
 agents plans, implements, tests, reviews, and (on your approval) commits/pushes it.
 
 It was built provider-independent by design: an `LLMProvider` abstraction sits between every agent
-and the model that answers it, so a new vendor is a new class, not a rewrite.
-`AnthropicProvider` is the one **working** implementation (needs an API key — see below).
+and the model that answers it, so a new vendor is a new class, not a rewrite. `AnthropicProvider`,
+`OpenAIProvider`, and `GeminiProvider` are all real implementations (each needs its own API key —
+see below); which provider each agent role uses by default is a deliberate per-task choice, not an
+arbitrary split — see the top-of-file comment in `providers/registry.py`.
 `EmergentUniversalKeyProvider` is a **deliberate, non-functional stub**: it implements the full
 interface so the `ModelRegistry` can list/select it, but every method raises
 `ProviderNotImplemented`. This document is the complete, isolated scope of what's left to make it
 real. Nothing else in the app should need to change.
+
+**Confidence note on OpenAI/Gemini:** their model names and pricing were checked against each
+vendor's own current docs (§10 lower down has the exact table). The *request/response shapes*
+(Chat Completions params for OpenAI, `GenerateContentConfig` fields for Gemini) were written from
+general knowledge of each SDK, not verified against a live call — no API keys were available to
+test with. If either provider errors immediately on a real call, check the request shape first
+(`openai_provider.py` / `gemini_provider.py`) before assuming the model ID is wrong.
 
 ## 1. What is complete (do not rebuild this)
 
@@ -25,7 +34,7 @@ real. Nothing else in the app should need to change.
 | Frontend production build (Vite + React + TS, `tsc --noEmit && vite build`) | Live and verified | `frontend/src/pages/*`, `frontend/src/lib/devstudio.ts` — built clean, zero TS errors, 0 warnings (verified this session) |
 | Git/GitHub integration (clone via local mirror, branch, commit, push, PR, diff, remote-drift detection) | Live but requires external credentials | `backend/app/devstudio/services/git_service.py`, `github_provider.py`; needs a GitHub PAT via Settings |
 | Repository indexing/search, project memory, workspaces, checkpoints, execution/testing service, browser QA (Playwright), preview adapter, uploads, usage tracking, SSE activity stream | Live but requires external credentials | Real implementations throughout `backend/app/devstudio/services/`. The ones that call an LLM (analysis, planning, implementation, review) require a configured provider. Browser QA additionally requires `pip install -r backend/requirements-devstudio.txt` |
-| Anthropic-backed agent pipeline (Supervisor → Analyst → Planner → implementer → QA → Reviewer → Git) | Live but requires external credentials | `backend/app/devstudio/agents/*`; requires `ANTHROPIC_API_KEY`. **Not run end-to-end against a live Anthropic account in this build** — no key was available in the environment this was built in. The code path, prompts, and JSON contracts are real and unit-testable; the model round-trip itself is unverified here |
+| Agent pipeline (Supervisor → Analyst → Planner → implementer → QA → Reviewer → Git), across Anthropic/OpenAI/Gemini | Live but requires external credentials | `backend/app/devstudio/agents/*`, `providers/{anthropic,openai,gemini}_provider.py`; requires at least `ANTHROPIC_API_KEY` (all three presets' non-Design/Reviewer roles), plus `OPENAI_API_KEY`/`GEMINI_API_KEY` for Reviewer/Design's primary models. **Not run end-to-end against any live provider account in this build** — no keys were available in the environment this was built in. The code paths, prompts, and JSON contracts are real and unit-testable; the model round-trips themselves are unverified here |
 | Emergent provider slot | Structural/not connected (intentional) | `backend/app/devstudio/providers/emergent_provider.py` — every method raises `ProviderNotImplemented` with a `TODO(Emergent)` message |
 
 Do not re-architect `AgentOrchestrator`, the state machines, `FileService`, `GitService`, or the
@@ -194,12 +203,14 @@ grep -rn "ProviderNotImplemented\|EmergentUniversalKeyProvider" apps/zanelvo-dev
 | Variable | Purpose | Required for |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | AnthropicProvider auth | Anthropic-backed agents (already working) |
+| `OPENAI_API_KEY` | OpenAIProvider auth | OpenAI-backed agents — Reviewer's primary model at BALANCED/MAX_QUALITY (already working) |
+| `GEMINI_API_KEY` | GeminiProvider auth | Gemini-backed agents — Design's primary model (already working) |
 | `EMERGENT_UNIVERSAL_KEY` | EmergentUniversalKeyProvider auth | Emergent-backed agents (this handoff) |
 | `DEVSTUDIO_GITHUB_TOKEN` | GitHub PAT (overrides the stored secret) | repository clone/browse/commit/push/PR |
 | `MONGO_URL`, `DB_NAME` | Mongo connection | all persistence (`ds_*` collections) |
 | `JWT_SECRET`, `ADMIN_PASSWORD` | App auth | required to boot at all — unrelated to Emergent |
 
-All three provider/GitHub secrets can alternatively be set via
+All provider/GitHub secrets can alternatively be set via
 `POST /api/devstudio/settings/secrets` (encrypted at rest with
 `apps/zanelvo-dev-studio/backend/app/services/secretbox.py`) rather than as environment variables
 — see `SettingsPanel` in `frontend/src/pages/panels.tsx`.
