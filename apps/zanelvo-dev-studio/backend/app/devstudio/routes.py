@@ -1,0 +1,501 @@
+"""Zanelvo Dev Studio API — mounted at /api/devstudio. Every route requires the single admin
+session (`require_devstudio_access` / `require_devstudio_write`, both backed by `app.deps.require_auth`
+— see CLAUDE.md for why this app has no roles or accounts system)."""
+from __future__ import annotations
+
+import os
+from typing import List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
+from starlette.responses import StreamingResponse
+
+from .agents import git_agent, orchestrator, qa_agent, registry as agent_registry
+from .models import (AgentRole, CreateProjectRequest, CreateTaskRequest, MemoryCategory,
+                       ModelPreset, TaskMessageRequest)
+from .security import require_devstudio_access, require_devstudio_write
+from .services import (activity_service, browser_service, checkpoint_service, execution_service,
+                         github_provider, indexer, memory_service, repository_service,
+                         settings_service, task_manager, upload_service, usage_tracker,
+                         workspace_manager)
+from .services.diff_service import get_diff_summary
+from .services.file_service import FileService
+
+router = APIRouter(prefix="/api/devstudio", tags=["devstudio"])
+
+
+async def _require_project(project_id: str):
+    project = await repository_service.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return project
+
+
+async def _require_task(task_id: str):
+    task = await task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    return task
+
+
+async def _require_workspace(task_id: str):
+    ws = await workspace_manager.get_workspace_for_task(task_id)
+    if not ws:
+        raise HTTPException(400, "Task has no workspace yet — run it first")
+    return ws
+
+
+# --- Capabilities (Phase 0) --------------------------------------------------------------
+
+@router.get("/capabilities")
+async def capabilities(user: str = Depends(require_devstudio_access)):
+    import shutil as _shutil
+    out = []
+    out.append({"name": "git_cli", "available": bool(_shutil.which("git")), "detail": None})
+    workspaces_root = workspace_manager.WORKSPACES_ROOT
+    try:
+        os.makedirs(workspaces_root, exist_ok=True)
+        testfile = os.path.join(workspaces_root, ".write_test")
+        with open(testfile, "w") as fh:
+            fh.write("ok")
+        os.remove(testfile)
+        out.append({"name": "writable_workspace", "available": True, "detail": workspaces_root})
+    except OSError as e:
+        out.append({"name": "writable_workspace", "available": False, "detail": str(e)})
+    out.append({"name": "child_processes", "available": True, "detail": "asyncio.create_subprocess_exec"})
+    try:
+        import playwright  # noqa: F401
+        out.append({"name": "playwright", "available": True, "detail": None})
+    except ImportError:
+        out.append({"name": "playwright", "available": False,
+                     "detail": "pip install -r requirements-devstudio.txt"})
+    gh = await github_provider.connectivity_check()
+    out.append({"name": "github", "available": gh["available"], "detail": gh["detail"]})
+    try:
+        from ..db import get_db
+        await get_db().command("ping")
+        out.append({"name": "database", "available": True, "detail": None})
+    except Exception as e:  # noqa: BLE001
+        out.append({"name": "database", "available": False, "detail": str(e)})
+    out.append({"name": "sse", "available": True, "detail": "EventSourceResponse"})
+    secrets = await settings_service.secrets_status()
+    out.append({"name": "anthropic_provider", "available": secrets["anthropic_api_key"],
+                 "detail": None if secrets["anthropic_api_key"] else "ANTHROPIC_API_KEY not configured"})
+    out.append({"name": "emergent_provider", "available": False,
+                 "detail": "Intentional stub — see docs/EMERGENT_INTEGRATION_HANDOFF.md"})
+    return {"capabilities": out}
+
+
+# --- Settings / secrets --------------------------------------------------------------------
+
+class SecretBody(BaseModel):
+    name: str
+    value: str
+
+
+class SettingsBody(BaseModel):
+    model_preset: Optional[ModelPreset] = None
+    default_orchestration_budget: Optional[int] = None
+    preview_mode: Optional[str] = None
+
+
+@router.get("/settings")
+async def get_settings(user: str = Depends(require_devstudio_access)):
+    settings = await settings_service.get_settings()
+    secrets = await settings_service.secrets_status()
+    return {"settings": settings.model_dump(), "secrets_configured": secrets}
+
+
+@router.put("/settings")
+async def update_settings(body: SettingsBody, user: str = Depends(require_devstudio_write)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    settings = await settings_service.update_settings(**fields)
+    return settings.model_dump()
+
+
+@router.post("/settings/secrets")
+async def set_secret(body: SecretBody, user: str = Depends(require_devstudio_write)):
+    await settings_service.set_secret(body.name, body.value)
+    return {"ok": True}
+
+
+# --- GitHub ------------------------------------------------------------------------------
+
+@router.get("/github/whoami")
+async def github_whoami(user: str = Depends(require_devstudio_access)):
+    return await github_provider.connectivity_check()
+
+
+@router.get("/github/repos")
+async def github_repos(user: str = Depends(require_devstudio_access)):
+    return {"repos": await github_provider.list_repos()}
+
+
+@router.get("/github/{owner}/{repo}/branches")
+async def github_branches(owner: str, repo: str, user: str = Depends(require_devstudio_access)):
+    return {"branches": await github_provider.list_branches(owner, repo)}
+
+
+# --- Projects ----------------------------------------------------------------------------
+
+@router.post("/projects")
+async def create_project(body: CreateProjectRequest, user: str = Depends(require_devstudio_write)):
+    project = await repository_service.create_project(body)
+    return project.model_dump()
+
+
+@router.get("/projects")
+async def list_projects(user: str = Depends(require_devstudio_access)):
+    return {"projects": [p.model_dump() for p in await repository_service.list_projects()]}
+
+
+@router.get("/projects/{project_id}")
+async def get_project(project_id: str, user: str = Depends(require_devstudio_access)):
+    return (await _require_project(project_id)).model_dump()
+
+
+@router.get("/projects/{project_id}/branches")
+async def project_branches(project_id: str, user: str = Depends(require_devstudio_access)):
+    project = await _require_project(project_id)
+    return {"branches": await repository_service.list_branches(project)}
+
+
+@router.post("/projects/{project_id}/sync")
+async def sync_project(project_id: str, branch: str, user: str = Depends(require_devstudio_write)):
+    project = await _require_project(project_id)
+    snapshot = await indexer.index_project_branch(project, branch)
+    return snapshot.model_dump()
+
+
+@router.get("/projects/{project_id}/tree")
+async def project_tree(project_id: str, branch: str, subdir: str = "",
+                        user: str = Depends(require_devstudio_access)):
+    project = await _require_project(project_id)
+    entries = await repository_service.browse_tree(project, branch, subdir)
+    return {"entries": [e.__dict__ for e in entries]}
+
+
+@router.get("/projects/{project_id}/file")
+async def project_file(project_id: str, branch: str, path: str,
+                        user: str = Depends(require_devstudio_access)):
+    project = await _require_project(project_id)
+    try:
+        content = await repository_service.browse_read_file(project, branch, path)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, str(e))
+    return {"path": path, "content": content}
+
+
+@router.get("/projects/{project_id}/search")
+async def project_search(project_id: str, branch: str, q: str,
+                          user: str = Depends(require_devstudio_access)):
+    project = await _require_project(project_id)
+    return {"results": await repository_service.browse_search(project, branch, q)}
+
+
+# --- Project memory ------------------------------------------------------------------------
+
+class MemoryBody(BaseModel):
+    category: MemoryCategory
+    title: str
+    content: str
+    branch: Optional[str] = None
+    confidence: str = "medium"
+
+
+@router.get("/projects/{project_id}/memory")
+async def list_memory(project_id: str, category: Optional[str] = None,
+                       user: str = Depends(require_devstudio_access)):
+    items = await memory_service.list_memory(project_id, category=category)
+    return {"memory": [m.model_dump() for m in items]}
+
+
+@router.post("/projects/{project_id}/memory")
+async def add_memory(project_id: str, body: MemoryBody, user: str = Depends(require_devstudio_write)):
+    await _require_project(project_id)
+    mem = await memory_service.add_memory(project_id, body.category, body.title, body.content,
+                                            branch=body.branch, confidence=body.confidence)
+    return mem.model_dump()
+
+
+@router.patch("/memory/{memory_id}")
+async def update_memory(memory_id: str, content: str = Body(..., embed=True),
+                          reason: str = Body("founder edit", embed=True),
+                          user: str = Depends(require_devstudio_write)):
+    mem = await memory_service.update_memory(memory_id, content, reason)
+    return mem.model_dump()
+
+
+@router.post("/memory/{memory_id}/stale")
+async def mark_memory_stale(memory_id: str, user: str = Depends(require_devstudio_write)):
+    await memory_service.mark_stale(memory_id)
+    return {"ok": True}
+
+
+@router.delete("/memory/{memory_id}")
+async def delete_memory(memory_id: str, user: str = Depends(require_devstudio_write)):
+    await memory_service.delete_memory(memory_id)
+    return {"ok": True}
+
+
+# --- Agent configuration -------------------------------------------------------------------
+
+@router.get("/agents/config")
+async def get_agent_configs(user: str = Depends(require_devstudio_access)):
+    configs = await agent_registry.list_configs()
+    return {"agents": {role: cfg.model_dump() for role, cfg in configs.items()}}
+
+
+class AgentConfigBody(BaseModel):
+    enabled: Optional[bool] = None
+    primary_provider: Optional[str] = None
+    primary_model: Optional[str] = None
+    fallback_provider: Optional[str] = None
+    fallback_model: Optional[str] = None
+    reasoning_level: Optional[str] = None
+    max_attempts: Optional[int] = None
+    automatic_fallback: Optional[bool] = None
+
+
+@router.put("/agents/config/{role}")
+async def update_agent_config(role: AgentRole, body: AgentConfigBody,
+                                user: str = Depends(require_devstudio_write)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    cfg = await agent_registry.update_config(role, **fields)
+    return cfg.model_dump()
+
+
+@router.post("/agents/preset/{preset}")
+async def apply_preset(preset: ModelPreset, user: str = Depends(require_devstudio_write)):
+    configs = await agent_registry.apply_preset(preset)
+    return {"agents": {role: cfg.model_dump() for role, cfg in configs.items()}}
+
+
+# --- Tasks -------------------------------------------------------------------------------
+
+@router.post("/tasks")
+async def create_task(body: CreateTaskRequest, user: str = Depends(require_devstudio_write)):
+    await _require_project(body.project_id)
+    task = await task_manager.create_task(body, created_by=user.id)
+    return task.model_dump()
+
+
+@router.get("/tasks")
+async def list_tasks(project_id: Optional[str] = None, user: str = Depends(require_devstudio_access)):
+    return {"tasks": [t.model_dump() for t in await task_manager.list_tasks(project_id)]}
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(task_id: str, user: str = Depends(require_devstudio_access)):
+    return (await _require_task(task_id)).model_dump()
+
+
+@router.get("/tasks/{task_id}/messages")
+async def get_task_messages(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return {"messages": await task_manager.list_messages(task_id)}
+
+
+@router.post("/tasks/{task_id}/messages")
+async def post_task_message(task_id: str, body: TaskMessageRequest, background_tasks: BackgroundTasks,
+                              user: str = Depends(require_devstudio_write)):
+    task = await _require_task(task_id)
+    await task_manager.add_message_from_request(task_id, body)
+    # A follow-up message on a resting task resumes orchestration automatically (per spec: natural
+    # follow-ups like "Continue." / "Fix it." should just work without a separate Run click).
+    if task.status not in ("IMPLEMENTING", "TESTING", "ANALYZING_REPOSITORY", "PLANNING"):
+        background_tasks.add_task(orchestrator.run_task, task_id)
+    return {"ok": True}
+
+
+@router.post("/tasks/{task_id}/run")
+async def run_task(task_id: str, background_tasks: BackgroundTasks,
+                     user: str = Depends(require_devstudio_write)):
+    task = await _require_task(task_id)
+    if task.status in ("COMPLETED",):
+        raise HTTPException(400, f"Task is {task.status}; nothing to run")
+    await task_manager.clear_stop(task_id)
+    background_tasks.add_task(orchestrator.run_task, task_id)
+    return {"ok": True, "status": task.status}
+
+
+@router.post("/tasks/{task_id}/stop")
+async def stop_task(task_id: str, user: str = Depends(require_devstudio_write)):
+    await _require_task(task_id)
+    task = await task_manager.request_stop(task_id)
+    return task.model_dump()
+
+
+@router.get("/tasks/{task_id}/events")
+async def task_events(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return StreamingResponse(activity_service.stream(task_id), media_type="text/event-stream",
+                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/tasks/{task_id}/plan")
+async def get_plan(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return {"plan": [p.model_dump() for p in await task_manager.list_plan_items(task_id)]}
+
+
+@router.get("/tasks/{task_id}/diff")
+async def get_diff(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    ws = await workspace_manager.get_workspace_for_task(task_id)
+    if not ws:
+        return {"files": [], "total_additions": 0, "total_deletions": 0, "changed_file_count": 0}
+    summary = await get_diff_summary(ws.local_path, ws.base_commit_sha)
+    return summary.to_dict()
+
+
+@router.get("/tasks/{task_id}/files/tree")
+async def task_files_tree(task_id: str, subdir: str = "", user: str = Depends(require_devstudio_access)):
+    ws = await _require_workspace(task_id)
+    entries = FileService(ws.local_path).list_tree(subdir)
+    return {"entries": [e.__dict__ for e in entries]}
+
+
+@router.get("/tasks/{task_id}/files/read")
+async def task_file_read(task_id: str, path: str, user: str = Depends(require_devstudio_access)):
+    ws = await _require_workspace(task_id)
+    try:
+        return {"path": path, "content": FileService(ws.local_path).read_file(path)}
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, str(e))
+
+
+@router.get("/tasks/{task_id}/tests")
+async def get_tests(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return {"runs": [r.model_dump() for r in await execution_service.get_test_runs(task_id)]}
+
+
+@router.post("/tasks/{task_id}/tests/run")
+async def run_tests(task_id: str, user: str = Depends(require_devstudio_write)):
+    ws = await _require_workspace(task_id)
+    runs = await qa_agent.run_risk_based_tests(task_id, ws)
+    return {"runs": [r.model_dump() for r in runs]}
+
+
+@router.get("/tasks/{task_id}/screenshots")
+async def get_screenshots(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return {"screenshots": [s.model_dump() for s in await browser_service.list_screenshots(task_id)]}
+
+
+class BrowserRunBody(BaseModel):
+    base_url: str
+    scenario: str = "smoke"
+    actions: List[dict] = []
+    viewport: str = "1280x800"
+
+
+@router.post("/tasks/{task_id}/browser/run")
+async def run_browser(task_id: str, body: BrowserRunBody, user: str = Depends(require_devstudio_write)):
+    await _require_task(task_id)
+    run = await browser_service.run_scenario(task_id, body.base_url, body.scenario, body.actions,
+                                                body.viewport)
+    return run.model_dump()
+
+
+@router.get("/tasks/{task_id}/checkpoints")
+async def list_checkpoints(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return {"checkpoints": [c.model_dump() for c in await checkpoint_service.list_checkpoints(task_id)]}
+
+
+@router.post("/tasks/{task_id}/checkpoints")
+async def create_checkpoint(task_id: str, label: str = Body(..., embed=True),
+                              reason: Optional[str] = Body(None, embed=True),
+                              user: str = Depends(require_devstudio_write)):
+    ws = await _require_workspace(task_id)
+    cp = await checkpoint_service.create_checkpoint(task_id, ws, label, reason)
+    return cp.model_dump()
+
+
+@router.post("/tasks/{task_id}/checkpoints/{checkpoint_id}/restore")
+async def restore_checkpoint(task_id: str, checkpoint_id: str, confirm: bool = Body(False, embed=True),
+                               user: str = Depends(require_devstudio_write)):
+    ws = await _require_workspace(task_id)
+    try:
+        cp = await checkpoint_service.restore_checkpoint(task_id, ws, checkpoint_id, confirm=confirm)
+    except checkpoint_service.RestoreNotConfirmed as e:
+        raise HTTPException(409, str(e))
+    return cp.model_dump()
+
+
+@router.post("/tasks/{task_id}/commit")
+async def commit_task(task_id: str, message: str = Body(..., embed=True),
+                        user: str = Depends(require_devstudio_write)):
+    task = await _require_task(task_id)
+    ws = await _require_workspace(task_id)
+    try:
+        task = await task_manager.set_status(task_id, "COMMITTING")
+    except Exception as e:  # noqa: BLE001 — state_machine.InvalidTransition
+        raise HTTPException(400, str(e))
+    sha = await git_agent.commit(task, ws, message)
+    return {"commit_sha": sha, "status": task.status}
+
+
+class PushBody(BaseModel):
+    force_after_drift: bool = False
+
+
+@router.post("/tasks/{task_id}/push")
+async def push_task(task_id: str, body: PushBody = PushBody(), user: str = Depends(require_devstudio_write)):
+    task = await _require_task(task_id)
+    ws = await _require_workspace(task_id)
+    project = await _require_project(task.project_id)
+    drift = await workspace_manager.detect_remote_drift(project, ws)
+    if drift and not body.force_after_drift:
+        raise HTTPException(409, f"Base branch '{ws.base_branch}' has moved on GitHub since this "
+                                   "workspace was created. Re-run the task to refresh, or pass "
+                                   "force_after_drift=true to push anyway.")
+    try:
+        task = await task_manager.set_status(task_id, "PUSHING")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+    await git_agent.push(task, ws)
+    task = await task_manager.set_status(task_id, "COMPLETED")
+    await task_manager.update_task(task_id, completion_note="Pushed to GitHub")
+    return {"status": task.status, "branch": ws.working_branch}
+
+
+class PullRequestBody(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/pr")
+async def open_pr(task_id: str, req: PullRequestBody = PullRequestBody(),
+                    user: str = Depends(require_devstudio_write)):
+    task = await _require_task(task_id)
+    ws = await _require_workspace(task_id)
+    project = await _require_project(task.project_id)
+    pr = await git_agent.open_pull_request(task, project, ws, req.title or task.title,
+                                             req.body or task.request_text)
+    return pr
+
+
+@router.get("/tasks/{task_id}/usage")
+async def get_usage(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return await usage_tracker.task_usage_summary(task_id)
+
+
+@router.post("/tasks/{task_id}/uploads")
+async def upload_file(task_id: str, file: UploadFile, user: str = Depends(require_devstudio_write)):
+    await _require_task(task_id)
+    data = await file.read()
+    try:
+        up = await upload_service.save_upload(file.filename, file.content_type, data, task_id=task_id)
+    except upload_service.UploadRejected as e:
+        raise HTTPException(400, str(e))
+    return up.model_dump()
+
+
+@router.get("/tasks/{task_id}/uploads")
+async def list_uploads(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    return {"uploads": [u.model_dump() for u in await upload_service.list_uploads(task_id)]}

@@ -1,4 +1,5 @@
 # apps/
 
-Each subfolder here is one independent app or site. Nothing exists yet — add the first one as
-`apps/<name>/` when you're ready to build it.
+Each subfolder here is one independent app or site.
+
+- [`zanelvo-dev-studio/`](./zanelvo-dev-studio/) — private AI software-development environment.

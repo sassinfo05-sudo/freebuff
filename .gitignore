@@ -36,3 +36,6 @@ venv/
 
 # Logs
 *.log
+
+# App-specific runtime data
+apps/zanelvo-dev-studio/backend/var/

@@ -1,0 +1,13 @@
+# Ruff config — gate on REAL correctness issues (syntax errors, unused/undefined names, bad
+# f-strings, redefinitions). The codebase deliberately uses compact one-line style (semicolons,
+# short loop vars), so those purely-stylistic E7xx/E4xx rules are intentionally not selected.
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E9", "F"]
+ignore = ["F541"]  # f-string without placeholder is harmless
+
+[lint.per-file-ignores]
+"tests/*" = ["F401", "F811"]
+"__init__.py" = ["F401"]
