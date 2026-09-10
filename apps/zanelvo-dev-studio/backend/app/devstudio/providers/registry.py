@@ -16,6 +16,22 @@ would be diversity for its own sake, not a real improvement. Two roles genuinely
   reviewer shouldn't be the PR's own author. This is an architectural choice, not a claim that
   OpenAI reviews code better than Claude does.
 
+Within Anthropic, MAX_QUALITY further splits Fable 5.1 vs Opus 5 by role rather than picking one
+model for everything:
+
+- Supervisor, Repository Analyst, Planner, and Frontend use Fable 5.1 — it's Anthropic's newest
+  flagship, built for long-running agentic problem-solving and self-recovery, and beats Opus 5 on
+  most benchmarks while using far fewer output tokens. Its weak spot is lower single-shot (pass@1)
+  accuracy than Opus, which matters less for orchestration/analysis/planning/UI work, where a
+  wrong first attempt gets caught and retried rather than shipped.
+- Backend and Integration stay on Opus 5. Fable carries safety guardrails around cybersecurity/
+  biology content that can trigger on legitimate security-adjacent code (auth flows, crypto,
+  sandboxing, permission checks) — exactly what these two roles write routinely — and silently
+  falls back to a weaker model (Opus 4.8) when it does. Opus 5 has no such block risk and the
+  highest pass@1 of the lineup, which is worth more than Fable's efficiency gains for code that
+  guards tenant boundaries and secrets.
+- Design and Reviewer are unaffected by this split — they were already on Gemini/OpenAI.
+
 Model names/prices were checked against each vendor's own current pricing docs (Sept 2026) rather
 than assumed — see the commit that added the OpenAI/Gemini providers.
 """
@@ -42,6 +58,11 @@ _ANTHROPIC_BALANCED = {"primary_provider": "anthropic", "primary_model": "claude
                         "fallback_provider": "anthropic", "fallback_model": "claude-haiku-4-5"}
 _ANTHROPIC_MAX = {"primary_provider": "anthropic", "primary_model": "claude-opus-5",
                    "fallback_provider": "anthropic", "fallback_model": "claude-sonnet-5"}
+# MAX_QUALITY only, for roles where Fable 5.1's agentic strength outweighs its lower pass@1 and
+# there's no legitimate-code safety-block risk (see module docstring). Falls back to Opus 5, not
+# Fable's own internal Opus-4.8 fallback, so a block still lands on this tier's best model.
+_ANTHROPIC_MAX_FABLE = {"primary_provider": "anthropic", "primary_model": "claude-fable-5-1",
+                         "fallback_provider": "anthropic", "fallback_model": "claude-opus-5"}
 
 # Global presets. Each maps agent role -> (primary_provider, primary_model, fallback_provider,
 # fallback_model). Roles not listed fall back to the tier's "default" entry.
@@ -62,7 +83,11 @@ MODEL_PRESETS: Dict[str, Dict[str, Dict[str, Optional[str]]]] = {
                      "fallback_provider": "anthropic", "fallback_model": "claude-sonnet-5"},
     },
     "MAX_QUALITY": {
-        "default": _ANTHROPIC_MAX,
+        "default": _ANTHROPIC_MAX,  # backend, integration, qa, git land here — Opus 5
+        "supervisor": _ANTHROPIC_MAX_FABLE,
+        "repository_analyst": _ANTHROPIC_MAX_FABLE,
+        "planner": _ANTHROPIC_MAX_FABLE,
+        "frontend": _ANTHROPIC_MAX_FABLE,
         "design": {"primary_provider": "gemini", "primary_model": "gemini-3.1-pro-preview",
                    "fallback_provider": "anthropic", "fallback_model": "claude-opus-5"},
         "reviewer": {"primary_provider": "openai", "primary_model": "gpt-6-astra",

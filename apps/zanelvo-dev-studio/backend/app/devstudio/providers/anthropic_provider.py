@@ -17,6 +17,14 @@ from .base import LLMProvider, LLMResult, LLMUsage, ModelInfo, ProviderNotConfig
 # ModelRegistry requirement) rather than a live discovery call, since Anthropic's Python SDK has
 # no `models.list` guaranteed-stable endpoint across all deployments; this list is easy to extend.
 _MODELS = [
+    ModelInfo(id="claude-fable-5-1", provider="anthropic", label="Claude Fable 5.1",
+              supports_tools=True, supports_vision=True, supports_reasoning_levels=True,
+              context_window=200_000,
+              notes="Newest flagship, tuned for long-running agentic tasks and self-recovery; "
+                    "beats Opus 5 on most benchmarks but has lower single-shot (pass@1) accuracy "
+                    "and carries cybersecurity/biology safety guardrails that can block on "
+                    "legitimate security-adjacent code (auth, crypto, sandboxing) — kept off "
+                    "Backend/Integration for that reason, see registry.py."),
     ModelInfo(id="claude-opus-5", provider="anthropic", label="Claude Opus 5",
               supports_tools=True, supports_vision=True, supports_reasoning_levels=True,
               context_window=200_000),

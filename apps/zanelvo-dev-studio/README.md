@@ -19,18 +19,24 @@ piece intentionally left unfinished (the Emergent provider).
 Every agent's model is independently configurable (Settings → Agents), and three presets pick
 sane defaults across **Anthropic, OpenAI, and Gemini** — not just Anthropic everywhere:
 
-| Preset | Coding roles (Analyst/Planner/Frontend/Backend/Integration/Supervisor) | Design | Reviewer |
-|---|---|---|---|
-| ECONOMICAL | Claude Haiku 4.5 | Gemini 3.1 Flash-Lite | Claude Haiku 4.5 |
-| BALANCED | Claude Sonnet 5 | Gemini 3.1 Pro Preview | GPT-5.6 Terra |
-| MAX_QUALITY | Claude Opus 5 | Gemini 3.1 Pro Preview | GPT-6 Astra |
+| Preset | Supervisor/Analyst/Planner/Frontend | Backend/Integration | Design | Reviewer |
+|---|---|---|---|---|
+| ECONOMICAL | Claude Haiku 4.5 | Claude Haiku 4.5 | Gemini 3.1 Flash-Lite | Claude Haiku 4.5 |
+| BALANCED | Claude Sonnet 5 | Claude Sonnet 5 | Gemini 3.1 Pro Preview | GPT-5.6 Terra |
+| MAX_QUALITY | Claude Fable 5.1 | Claude Opus 5 | Gemini 3.1 Pro Preview | GPT-6 Astra |
 
 Coding-heavy roles stay on Claude across every tier — it has the most consistently-reported edge
-on agentic coding benchmarks, so anything else there would be diversity for its own sake. Two
-roles genuinely diverge: **Design** uses Gemini for its multimodal/large-context strength
-(screenshots, reference images), and **Reviewer** uses OpenAI as an independent second opinion
-from a different lab than the implementer (with Claude as its fallback). See the comment at the
-top of `app/devstudio/providers/registry.py` for the full reasoning.
+on agentic coding benchmarks, so anything else there would be diversity for its own sake. At
+MAX_QUALITY, Claude itself splits by role: **Supervisor/Analyst/Planner/Frontend** use Fable 5.1,
+Anthropic's newest flagship for long-running agentic work, which beats Opus 5 on most benchmarks
+but has lower single-shot accuracy and safety guardrails that can block on security-adjacent code.
+**Backend/Integration** stay on Opus 5 instead, since those roles routinely write auth/crypto/
+permission code where a Fable safety block is a real risk and Opus's higher pass@1 matters more
+than Fable's efficiency. Two roles diverge from Anthropic entirely: **Design** uses Gemini for its
+multimodal/large-context strength (screenshots, reference images), and **Reviewer** uses OpenAI as
+an independent second opinion from a different lab than the implementer (with Claude as its
+fallback). See the comment at the top of `app/devstudio/providers/registry.py` for the full
+reasoning.
 
 ## Running it
 
