@@ -65,6 +65,12 @@ export const devstudio = {
   openPr: (id: string, title?: string, body?: string) => api.post(`${base}/tasks/${id}/pr`, { title, body }),
   usage: (id: string) => api.get(`${base}/tasks/${id}/usage`),
 
+  previewLiveLocal: (id: string, subdir = "frontend") =>
+    api.post(`${base}/tasks/${id}/preview/live-local`, { subdir }),
+  previewStop: (id: string) => api.post(`${base}/tasks/${id}/preview/stop`),
+  previewExternal: (id: string, url: string) => api.post(`${base}/tasks/${id}/preview/external`, { url }),
+  previewScreenshot: (id: string) => api.get(`${base}/tasks/${id}/preview/screenshot`),
+
   eventsUrl: (id: string) => `${window.location.origin}/api${base}/tasks/${id}/events`,
 };
 

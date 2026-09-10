@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { Badge } from "@/components/ui/Badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
+import { CheckpointsPanel, PreviewPanel } from "./task-extra-panels";
 
 const AGENT_ICON: Record<string, any> = {
   supervisor: Bot, repository_analyst: FileText, planner: FlagTriangleRight,
@@ -202,6 +203,8 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
           <TabsTrigger value="diff">diff</TabsTrigger>
           <TabsTrigger value="tests">tests</TabsTrigger>
           <TabsTrigger value="screenshots">screenshots</TabsTrigger>
+          <TabsTrigger value="preview">preview</TabsTrigger>
+          <TabsTrigger value="checkpoints">checkpoints</TabsTrigger>
         </TabsList>
 
         <TabsContent value="plan" className="flex-1 min-h-0 overflow-y-auto p-3">
@@ -285,6 +288,14 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
             </div>
           ))}
           {!screenshots.length && <div className="text-xs text-white/40">No browser QA screenshots yet.</div>}
+        </TabsContent>
+
+        <TabsContent value="preview" className="flex-1 min-h-0">
+          <PreviewPanel taskId={taskId} />
+        </TabsContent>
+
+        <TabsContent value="checkpoints" className="flex-1 min-h-0">
+          <CheckpointsPanel taskId={taskId} />
         </TabsContent>
       </Tabs>
     </div>

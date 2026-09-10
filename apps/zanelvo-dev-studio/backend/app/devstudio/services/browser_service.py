@@ -44,9 +44,16 @@ async def run_scenario(task_id: str, base_url: str, scenario: str, actions: Opti
     res = await db.ds_browser_runs.insert_one(run.to_mongo())
     run.id = str(res.inserted_id)
 
+    status = "failed"
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch()
+            try:
+                browser = await p.chromium.launch()
+            except Exception as e:  # noqa: BLE001 — missing/mismatched browser binary is a setup
+                # gap ("run `playwright install chromium`"), not a finding about the app under test.
+                status = "unavailable"
+                console_errors.append(f"Could not launch Chromium: {type(e).__name__}: {e}")
+                raise
             page = await browser.new_page(viewport={"width": w, "height": h})
             page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
             page.on("requestfailed", lambda req: failed_requests.append(f"{req.method} {req.url}"))
@@ -71,8 +78,9 @@ async def run_scenario(task_id: str, base_url: str, scenario: str, actions: Opti
             viewport=viewport,
         ).to_mongo())
     except Exception as e:  # noqa: BLE001 — a real browser/navigation failure, recorded not swallowed
-        status = "failed"
-        console_errors.append(f"{type(e).__name__}: {e}")
+        if status != "unavailable":  # the launch-failure branch above already classified + logged it
+            status = "failed"
+            console_errors.append(f"{type(e).__name__}: {e}")
 
     await db.ds_browser_runs.update_one({"_id": __oid(run.id)}, {"$set": {
         "status": status, "console_errors": console_errors, "failed_requests": failed_requests,

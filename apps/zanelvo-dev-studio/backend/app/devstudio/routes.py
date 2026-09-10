@@ -15,9 +15,9 @@ from .models import (AgentRole, CreateProjectRequest, CreateTaskRequest, MemoryC
                        ModelPreset, TaskMessageRequest)
 from .security import require_devstudio_access, require_devstudio_write
 from .services import (activity_service, browser_service, checkpoint_service, execution_service,
-                         github_provider, indexer, memory_service, repository_service,
-                         settings_service, task_manager, upload_service, usage_tracker,
-                         workspace_manager)
+                         github_provider, indexer, memory_service, preview_service,
+                         repository_service, settings_service, task_manager, upload_service,
+                         usage_tracker, workspace_manager)
 from .services.diff_service import get_diff_summary
 from .services.file_service import FileService
 
@@ -276,7 +276,7 @@ async def apply_preset(preset: ModelPreset, user: str = Depends(require_devstudi
 @router.post("/tasks")
 async def create_task(body: CreateTaskRequest, user: str = Depends(require_devstudio_write)):
     await _require_project(body.project_id)
-    task = await task_manager.create_task(body, created_by=user.id)
+    task = await task_manager.create_task(body, created_by=user)
     return task.model_dump()
 
 
@@ -397,6 +397,49 @@ async def run_browser(task_id: str, body: BrowserRunBody, user: str = Depends(re
     run = await browser_service.run_scenario(task_id, body.base_url, body.scenario, body.actions,
                                                 body.viewport)
     return run.model_dump()
+
+
+# --- Preview (LIVE_LOCAL / SCREENSHOT_ONLY / EXTERNAL_URL) ---------------------------------
+
+class PreviewLiveLocalBody(BaseModel):
+    subdir: str = "frontend"  # relative to the workspace root; not a raw shell command — the
+                                # dev-server command itself is fixed ("npm start") to avoid turning
+                                # this into an arbitrary shell-command execution endpoint.
+
+
+@router.post("/tasks/{task_id}/preview/live-local")
+async def preview_live_local(task_id: str, body: PreviewLiveLocalBody = PreviewLiveLocalBody(),
+                               user: str = Depends(require_devstudio_write)):
+    ws = await _require_workspace(task_id)
+    state = await preview_service.start_live_local(task_id, ws.local_path, subdir=body.subdir)
+    return state.__dict__
+
+
+@router.post("/tasks/{task_id}/preview/stop")
+async def preview_stop(task_id: str, user: str = Depends(require_devstudio_write)):
+    stopped = await preview_service.stop_live_local(task_id)
+    return {"stopped": stopped}
+
+
+class PreviewExternalBody(BaseModel):
+    url: str
+
+
+@router.post("/tasks/{task_id}/preview/external")
+async def preview_external(task_id: str, body: PreviewExternalBody,
+                             user: str = Depends(require_devstudio_write)):
+    await _require_task(task_id)
+    state = preview_service.attach_external_url(body.url)
+    return state.__dict__
+
+
+@router.get("/tasks/{task_id}/preview/screenshot")
+async def preview_screenshot(task_id: str, user: str = Depends(require_devstudio_access)):
+    await _require_task(task_id)
+    screenshots = await browser_service.list_screenshots(task_id)
+    latest = screenshots[0].path if screenshots else None
+    state = preview_service.screenshot_only_state(latest)
+    return state.__dict__
 
 
 @router.get("/tasks/{task_id}/checkpoints")

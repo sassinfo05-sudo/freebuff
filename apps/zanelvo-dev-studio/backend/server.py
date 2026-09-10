@@ -6,9 +6,11 @@ see the app-level CLAUDE.md and README for what this app is and isn't.
 import logging
 from pathlib import Path
 
+from bson.errors import InvalidId
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -40,6 +42,52 @@ app.add_middleware(
 
 app.include_router(auth_routes.router)
 app.include_router(devstudio_routes.router)
+
+
+# --- Global error mapping ---------------------------------------------------------------------
+# Route handlers deliberately don't wrap every call in try/except: the domain exceptions raised by
+# app/devstudio/services/* are specific and self-describing, so one place maps each to the right
+# HTTP status instead of that boilerplate being repeated (or, worse, forgotten) per route. Anything
+# not in this map still becomes a clean JSON 500 — FastAPI's default unhandled-exception response
+# is plain text, which would break every frontend call site that reads `error.response.data.detail`.
+def _status_for(exc: Exception) -> int:
+    from app.devstudio.providers.base import ProviderNotConfigured, ProviderNotImplemented
+    from app.devstudio.services.checkpoint_service import RestoreNotConfirmed
+    from app.devstudio.services.execution_service import CommandBlocked
+    from app.devstudio.services.file_service import PathEscapeError, StalePatchError
+    from app.devstudio.services.git_service import GitError
+    from app.devstudio.services.github_provider import GitHubError
+    from app.devstudio.services.upload_service import UploadRejected
+    from app.devstudio.state_machine import InvalidTransition
+
+    if isinstance(exc, InvalidId):
+        return 400
+    if isinstance(exc, PathEscapeError):
+        return 400
+    if isinstance(exc, StalePatchError):
+        return 409
+    if isinstance(exc, RestoreNotConfirmed):
+        return 409
+    if isinstance(exc, InvalidTransition):
+        return 400
+    if isinstance(exc, (CommandBlocked, UploadRejected)):
+        return 400
+    if isinstance(exc, (ProviderNotConfigured, ProviderNotImplemented)):
+        return 424  # Failed Dependency — a configuration gap, not a server bug
+    if isinstance(exc, (GitError, GitHubError)):
+        return 502  # the upstream git/GitHub operation failed
+    if isinstance(exc, (ValueError, FileNotFoundError, FileExistsError)):
+        return 400
+    return 500
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    status = _status_for(exc)
+    if status == 500:
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse({"detail": "Internal server error"}, status_code=500)
+    return JSONResponse({"detail": str(exc)[:500]}, status_code=status)
 
 
 @app.get("/api/health")

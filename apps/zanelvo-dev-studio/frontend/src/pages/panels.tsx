@@ -185,13 +185,22 @@ export function AgentsPanel() {
 export function GitHubPanel() {
   const [status, setStatus] = useState<any>(null);
   const [repos, setRepos] = useState<any[]>([]);
+  const [reposError, setReposError] = useState<string | null>(null);
 
   async function load() {
+    setReposError(null);
     const { data } = await devstudio.githubWhoami();
     setStatus(data);
     if (data.available) {
-      const r = await devstudio.githubRepos();
-      setRepos(r.data.repos);
+      try {
+        const r = await devstudio.githubRepos();
+        setRepos(r.data.repos);
+      } catch (e: any) {
+        // Connectivity can be fine while listing repos still fails (e.g. a token scoped to
+        // specific repos rather than full account access) — surface it instead of going quiet.
+        setRepos([]);
+        setReposError(e?.response?.data?.detail || "Could not list repositories");
+      }
     }
   }
   useEffect(() => {
@@ -218,6 +227,7 @@ export function GitHubPanel() {
             and commit/push from Dev Studio.
           </div>
         )}
+        {reposError && <div className="text-xs text-amber-300">{reposError}</div>}
         {repos.map((r) => (
           <div key={r.full_name} className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs flex items-center justify-between">
             <span className="text-white/80">{r.full_name}</span>
