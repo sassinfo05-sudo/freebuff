@@ -34,13 +34,22 @@ model for everything:
 
 Model names/prices were checked against each vendor's own current pricing docs (Sept 2026) rather
 than assumed — see the commit that added the OpenAI/Gemini providers.
+
+Credential paths (Settings > Secrets, or the equivalent env vars): native per-vendor API keys
+(anthropic/openai/gemini — one key each), Amazon Bedrock (an AWS access key/secret pair + region,
+or the default AWS credential chain if no key pair is stored — see bedrock_provider.py), and the
+Emergent Universal Key (intentional stub, see emergent_provider.py). None of the three presets
+route through Bedrock or Emergent by default; both are available as an explicit per-role override
+(Settings > Agents > pick a role > choose provider) for deployments that need them, without
+changing what ships to everyone else.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from .anthropic_provider import AnthropicProvider
 from .base import LLMProvider, ModelInfo
+from .bedrock_provider import BedrockProvider
 from .emergent_provider import EmergentUniversalKeyProvider
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
@@ -49,6 +58,7 @@ _PROVIDER_CLASSES: Dict[str, Type[LLMProvider]] = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
+    "bedrock": BedrockProvider,
     "emergent": EmergentUniversalKeyProvider,
 }
 
@@ -103,9 +113,13 @@ def preset_for_role(preset: str, role: str) -> Dict[str, Optional[str]]:
 
 class ModelRegistry:
     """Live registry of instantiated providers for one request/task run. Instantiate once per
-    orchestration run (providers are cheap; API keys are resolved once via SettingsService)."""
+    orchestration run (providers are cheap; API keys are resolved once via SettingsService).
 
-    def __init__(self, api_keys: Dict[str, Optional[str]]):
+    `api_keys` values are usually a single API key string, except "bedrock" — Bedrock uses the
+    AWS credential model (access key/secret pair + region), so its value is a small dict instead;
+    see BedrockProvider.__init__."""
+
+    def __init__(self, api_keys: Dict[str, Any]):
         self._api_keys = api_keys
         self._instances: Dict[str, LLMProvider] = {}
 

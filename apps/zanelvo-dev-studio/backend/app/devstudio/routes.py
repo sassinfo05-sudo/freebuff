@@ -13,6 +13,7 @@ from starlette.responses import StreamingResponse
 from .agents import git_agent, orchestrator, qa_agent, registry as agent_registry
 from .models import (AgentRole, CreateProjectRequest, CreateTaskRequest, MemoryCategory,
                        ModelPreset, TaskMessageRequest)
+from .providers import registry as provider_registry
 from .security import require_devstudio_access, require_devstudio_write
 from .services import (activity_service, browser_service, checkpoint_service, execution_service,
                          github_provider, indexer, memory_service, preview_service,
@@ -85,9 +86,26 @@ async def capabilities(user: str = Depends(require_devstudio_access)):
                  "detail": None if secrets["openai_api_key"] else "OPENAI_API_KEY not configured"})
     out.append({"name": "gemini_provider", "available": secrets["gemini_api_key"],
                  "detail": None if secrets["gemini_api_key"] else "GEMINI_API_KEY not configured"})
+    bedrock_ready = bool(secrets["aws_region"])  # key pair optional — default AWS chain can cover it
+    out.append({"name": "bedrock_provider", "available": bedrock_ready,
+                 "detail": None if bedrock_ready else "aws_region not configured (AWS_REGION also works)"})
     out.append({"name": "emergent_provider", "available": False,
                  "detail": "Intentional stub — see docs/EMERGENT_INTEGRATION_HANDOFF.md"})
     return {"capabilities": out}
+
+
+@router.get("/providers/models")
+async def list_provider_models(user: str = Depends(require_devstudio_access)):
+    """Full model catalog across every provider, grouped by provider — powers the per-role
+    provider/model pickers in Settings > Agents. Static per-provider lists (no live credentials
+    required to see them; `capabilities` above is what tells you which ones will actually run)."""
+    from dataclasses import asdict
+
+    registry = await settings_service.build_model_registry()
+    by_provider: dict = {}
+    for m in registry.list_all_models():
+        by_provider.setdefault(m.provider, []).append(asdict(m))
+    return {"providers": provider_registry.known_provider_names(), "models": by_provider}
 
 
 # --- Settings / secrets --------------------------------------------------------------------

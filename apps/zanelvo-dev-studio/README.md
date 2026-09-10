@@ -38,6 +38,26 @@ an independent second opinion from a different lab than the implementer (with Cl
 fallback). See the comment at the top of `app/devstudio/providers/registry.py` for the full
 reasoning.
 
+## Credentials: native keys, Amazon Bedrock, or Emergent
+
+Every role's provider/model is independently overridable from Settings → Agents — including its
+*fallback* provider/model, not just its primary — regardless of which preset is applied. Three
+credential paths are available, side by side, from Settings → Secrets:
+
+- **Native per-vendor API keys** — Anthropic, OpenAI, Gemini. One key each; this is what the three
+  presets use by default.
+- **Amazon Bedrock** — the same Claude models, routed through AWS instead of api.anthropic.com
+  (data residency, existing AWS billing, Bedrock provisioned throughput, VPC-only egress). Needs
+  an `aws_region`; the access key/secret pair is optional — leave it blank to use boto3's own
+  default AWS credential chain (env vars, `~/.aws/credentials`, an EC2/ECS/Lambda IAM role).
+- **Emergent Universal Key** — intentional stub, see
+  [`docs/EMERGENT_INTEGRATION_HANDOFF.md`](../../docs/EMERGENT_INTEGRATION_HANDOFF.md).
+
+None of the three presets route through Bedrock or Emergent by default — pick a role in Settings →
+Agents and set its provider explicitly to opt in, without changing what everyone else uses. See
+`app/devstudio/providers/bedrock_provider.py` for exactly how Bedrock credentials resolve and why
+its model IDs need confirming against the Bedrock console before production use.
+
 ## Running it
 
 ### Backend
@@ -71,8 +91,8 @@ pip install pytest pytest-xdist
 python -m pytest tests/ -q
 ```
 
-46 deterministic tests (state machine, anti-loop engine, command policy, execution/testing-service
-cwd safety, file safety, diff parsing) — no database or network required.
+53 deterministic tests (state machine, anti-loop engine, command policy, execution/testing-service
+cwd safety, file safety, diff parsing, provider registry) — no database or network required.
 
 ## What's real vs. what needs credentials
 
@@ -85,7 +105,9 @@ actually do anything, and say so clearly (never silently) when they don't have t
   `ANTHROPIC_API_KEY` configured (Settings screen or env var) — `OPENAI_API_KEY` and
   `GEMINI_API_KEY` are only needed if you want the Reviewer/Design roles' primary models rather
   than their Claude fallback. A task that reaches an unconfigured provider goes to `BLOCKED` with
-  a clear reason — it never fakes a result.
+  a clear reason — it never fakes a result. Amazon Bedrock (`aws_region` + optionally an AWS key
+  pair) and the Emergent Universal Key are additional opt-in credential paths — see "Credentials"
+  above — not required unless a role is explicitly pointed at them.
 
 Browser QA additionally needs `pip install -r requirements-devstudio.txt` (Playwright); without
 it, browser runs are recorded as `unavailable`, not silently skipped.

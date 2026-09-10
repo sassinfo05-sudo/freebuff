@@ -5,6 +5,7 @@ import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+import { Select } from "@/components/ui/Select";
 
 // --- Repository browser ---------------------------------------------------------------
 
@@ -131,12 +132,47 @@ export function MemoryPanel({ projectId }: { projectId: string }) {
 
 // --- Agents config -----------------------------------------------------------------------
 
+const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  bedrock: "Amazon Bedrock",
+  emergent: "Emergent",
+};
+
+const EDITABLE_FIELDS = [
+  "enabled", "primary_provider", "primary_model", "fallback_provider", "fallback_model",
+  "reasoning_level", "max_attempts", "automatic_fallback",
+] as const;
+
+type ModelInfo = { id: string; provider: string; label: string };
+type AgentDraft = {
+  enabled: boolean;
+  primary_provider: string;
+  primary_model: string;
+  fallback_provider: string | null;
+  fallback_model: string | null;
+  reasoning_level: string | null;
+  max_attempts: number;
+  automatic_fallback: boolean;
+};
+
 export function AgentsPanel() {
-  const [agents, setAgents] = useState<Record<string, any>>({});
+  const [agents, setAgents] = useState<Record<string, AgentDraft>>({});
+  const [drafts, setDrafts] = useState<Record<string, AgentDraft>>({});
+  const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelInfo[]>>({});
+  const [providers, setProviders] = useState<string[]>([]);
+  const [savingRole, setSavingRole] = useState<string | null>(null);
 
   async function load() {
-    const { data } = await devstudio.agentConfigs();
-    setAgents(data.agents);
+    const [{ data: agentData }, { data: modelData }] = await Promise.all([
+      devstudio.agentConfigs(),
+      devstudio.providerModels(),
+    ]);
+    setAgents(agentData.agents);
+    setDrafts(Object.fromEntries(Object.entries(agentData.agents).map(([r, c]) => [r, { ...(c as AgentDraft) }])));
+    setModelsByProvider(modelData.models);
+    setProviders(modelData.providers);
   }
   useEffect(() => {
     load();
@@ -145,8 +181,51 @@ export function AgentsPanel() {
   async function applyPreset(preset: string) {
     const { data } = await devstudio.applyPreset(preset);
     setAgents(data.agents);
+    setDrafts(Object.fromEntries(Object.entries(data.agents).map(([r, c]) => [r, { ...(c as AgentDraft) }])));
     toast.success(`Applied ${preset} preset to all agents`);
   }
+
+  function setField<K extends keyof AgentDraft>(role: string, field: K, value: AgentDraft[K]) {
+    setDrafts((d) => ({ ...d, [role]: { ...d[role], [field]: value } }));
+  }
+
+  function isDirty(role: string): boolean {
+    const a = agents[role], d = drafts[role];
+    if (!a || !d) return false;
+    return EDITABLE_FIELDS.some((k) => (a[k] ?? null) !== (d[k] ?? null));
+  }
+
+  async function save(role: string) {
+    setSavingRole(role);
+    try {
+      const d = drafts[role];
+      const { data } = await devstudio.updateAgentConfig(role, {
+        enabled: d.enabled,
+        primary_provider: d.primary_provider,
+        primary_model: d.primary_model,
+        fallback_provider: d.fallback_provider || null,
+        fallback_model: d.fallback_model || null,
+        reasoning_level: d.reasoning_level || null,
+        max_attempts: d.max_attempts,
+        automatic_fallback: d.automatic_fallback,
+      });
+      setAgents((a) => ({ ...a, [role]: data }));
+      setDrafts((dr) => ({ ...dr, [role]: { ...data } }));
+      toast.success(`Saved ${role.replace(/_/g, " ")}`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not save agent config");
+    } finally {
+      setSavingRole(null);
+    }
+  }
+
+  function modelOptions(provider: string) {
+    const models = modelsByProvider[provider] || [];
+    if (!models.length) return [{ value: "", label: provider === "emergent" ? "(stub — no models yet)" : "(no models)" }];
+    return models.map((m) => ({ value: m.id, label: m.label }));
+  }
+
+  const providerOptions = providers.map((p) => ({ value: p, label: PROVIDER_LABELS[p] || p }));
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -161,18 +240,99 @@ export function AgentsPanel() {
             ))}
           </div>
         </div>
-        {Object.entries(agents).map(([role, cfg]) => (
-          <div key={role} className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs flex items-center justify-between">
-            <div>
+        <div className="text-[11px] text-white/40">
+          Presets set every role at once. Override any single role below — including its
+          fallback — without leaving the preset for everything else.
+        </div>
+        {Object.entries(drafts).map(([role, cfg]) => (
+          <div key={role} className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs space-y-2.5">
+            <div className="flex items-center justify-between">
               <div className="font-medium text-white/80 capitalize">{role.replace(/_/g, " ")}</div>
-              <div className="text-white/40 mt-0.5">
-                {cfg.primary_provider}/{cfg.primary_model}
-                {cfg.fallback_model && <span> → fallback {cfg.fallback_provider}/{cfg.fallback_model}</span>}
+              <div className="flex items-center gap-2">
+                {isDirty(role) && <Badge className="border-amber-500/40 text-amber-300">unsaved</Badge>}
+                <label className="flex items-center gap-1.5 text-white/60">
+                  <input type="checkbox" checked={cfg.enabled}
+                    onChange={(e) => setField(role, "enabled", e.target.checked)} />
+                  enabled
+                </label>
               </div>
             </div>
-            <Badge className={cfg.enabled ? "border-emerald-500/40 text-emerald-300" : "border-white/20 text-white/40"}>
-              {cfg.enabled ? "enabled" : "disabled"}
-            </Badge>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-white/40 mb-1">Primary provider</div>
+                <Select value={cfg.primary_provider} options={providerOptions}
+                  onChange={(e) => {
+                    const provider = e.target.value;
+                    const firstModel = (modelsByProvider[provider] || [])[0]?.id || "";
+                    setDrafts((d) => ({ ...d, [role]: { ...d[role], primary_provider: provider, primary_model: firstModel } }));
+                  }} />
+              </div>
+              <div>
+                <div className="text-white/40 mb-1">Primary model</div>
+                <Select value={cfg.primary_model} options={modelOptions(cfg.primary_provider)}
+                  onChange={(e) => setField(role, "primary_model", e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-white/40 mb-1">Fallback provider</div>
+                <Select value={cfg.fallback_provider || ""}
+                  options={[{ value: "", label: "None" }, ...providerOptions]}
+                  onChange={(e) => {
+                    const provider = e.target.value;
+                    const firstModel = provider ? (modelsByProvider[provider] || [])[0]?.id || "" : "";
+                    setDrafts((d) => ({
+                      ...d,
+                      [role]: { ...d[role], fallback_provider: provider || null, fallback_model: firstModel || null },
+                    }));
+                  }} />
+              </div>
+              <div>
+                <div className="text-white/40 mb-1">Fallback model</div>
+                <Select value={cfg.fallback_model || ""} disabled={!cfg.fallback_provider}
+                  options={cfg.fallback_provider ? modelOptions(cfg.fallback_provider) : [{ value: "", label: "—" }]}
+                  onChange={(e) => setField(role, "fallback_model", e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <div className="text-white/40 mb-1">Reasoning level</div>
+                <Select value={cfg.reasoning_level || ""}
+                  options={[
+                    { value: "", label: "none" }, { value: "low", label: "low" },
+                    { value: "medium", label: "medium" }, { value: "high", label: "high" },
+                  ]}
+                  onChange={(e) => setField(role, "reasoning_level", e.target.value || null)} />
+              </div>
+              <div>
+                <div className="text-white/40 mb-1">Max attempts</div>
+                <Input type="number" min={1} max={5} value={cfg.max_attempts}
+                  onChange={(e) => setField(role, "max_attempts", Number(e.target.value) || 1)} />
+              </div>
+              <div>
+                <div className="text-white/40 mb-1">Auto-fallback</div>
+                <label className="flex items-center gap-1.5 text-white/60 h-8">
+                  <input type="checkbox" checked={cfg.automatic_fallback}
+                    onChange={(e) => setField(role, "automatic_fallback", e.target.checked)} />
+                  on failure
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <div className="text-white/40">
+                {cfg.primary_provider}/{cfg.primary_model || "—"}
+                {cfg.fallback_model
+                  ? <span> → fallback {cfg.fallback_provider}/{cfg.fallback_model}</span>
+                  : <span> → no fallback</span>}
+              </div>
+              <Button size="sm" disabled={!isDirty(role) || savingRole === role} onClick={() => save(role)}>
+                {savingRole === role ? "Saving…" : "Save"}
+              </Button>
+            </div>
           </div>
         ))}
       </div>
@@ -241,12 +401,18 @@ export function GitHubPanel() {
 
 // --- Settings ----------------------------------------------------------------------------
 
-const SECRET_FIELDS: { key: string; label: string; placeholder: string }[] = [
-  { key: "github_pat", label: "GitHub Personal Access Token", placeholder: "ghp_…" },
-  { key: "anthropic_api_key", label: "Anthropic API Key", placeholder: "sk-ant-…" },
-  { key: "openai_api_key", label: "OpenAI API Key", placeholder: "sk-…" },
-  { key: "gemini_api_key", label: "Gemini API Key", placeholder: "AIza…" },
+const SECRET_FIELDS: { key: string; label: string; placeholder: string; group: string }[] = [
+  { key: "github_pat", label: "GitHub Personal Access Token", placeholder: "ghp_…", group: "GitHub" },
+  { key: "anthropic_api_key", label: "Anthropic API Key", placeholder: "sk-ant-…", group: "Native API keys" },
+  { key: "openai_api_key", label: "OpenAI API Key", placeholder: "sk-…", group: "Native API keys" },
+  { key: "gemini_api_key", label: "Gemini API Key", placeholder: "AIza…", group: "Native API keys" },
+  { key: "emergent_universal_key", label: "Emergent Universal Key", placeholder: "sk-emergent-…", group: "Emergent" },
+  { key: "aws_access_key_id", label: "AWS Access Key ID", placeholder: "AKIA…", group: "Amazon Bedrock" },
+  { key: "aws_secret_access_key", label: "AWS Secret Access Key", placeholder: "…", group: "Amazon Bedrock" },
+  { key: "aws_session_token", label: "AWS Session Token (optional, for temporary credentials)", placeholder: "…", group: "Amazon Bedrock" },
+  { key: "aws_region", label: "AWS Region", placeholder: "us-east-1", group: "Amazon Bedrock" },
 ];
+const SECRET_GROUPS = ["GitHub", "Native API keys", "Amazon Bedrock", "Emergent"];
 
 export function SettingsPanel() {
   const [caps, setCaps] = useState<any[]>([]);
@@ -293,27 +459,40 @@ export function SettingsPanel() {
         </div>
         <div>
           <div className="text-sm font-medium text-white/80 mb-2">Secrets</div>
-          <div className="space-y-3">
-            {SECRET_FIELDS.map((f) => (
-              <div key={f.key}>
-                <label className="text-xs text-white/50">
-                  {f.label}{" "}
-                  {secretsConfigured[f.key] && (
-                    <Badge className="ml-1 bg-emerald-500/20 text-emerald-300 border-0">configured</Badge>
-                  )}
-                </label>
-                <div className="flex gap-1.5 mt-1">
-                  <Input type="password" value={draft[f.key] || ""}
-                    onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
-                    placeholder={f.placeholder} />
-                  <Button size="sm" onClick={() => saveSecret(f.key)}>Save</Button>
-                </div>
+          <div className="space-y-5">
+            {SECRET_GROUPS.map((group) => (
+              <div key={group} className="space-y-3">
+                <div className="text-[11px] uppercase tracking-wide text-white/40">{group}</div>
+                {group === "Amazon Bedrock" && (
+                  <div className="text-[11px] text-white/40 -mt-1">
+                    Access key/secret are optional — if left blank, Bedrock falls back to the
+                    standard AWS default credential chain (environment variables, an EC2/ECS/Lambda
+                    IAM role). A region is always required.
+                  </div>
+                )}
+                {SECRET_FIELDS.filter((f) => f.group === group).map((f) => (
+                  <div key={f.key}>
+                    <label className="text-xs text-white/50">
+                      {f.label}{" "}
+                      {secretsConfigured[f.key] && (
+                        <Badge className="ml-1 bg-emerald-500/20 text-emerald-300 border-0">configured</Badge>
+                      )}
+                    </label>
+                    <div className="flex gap-1.5 mt-1">
+                      <Input type="password" value={draft[f.key] || ""}
+                        onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                        placeholder={f.placeholder} />
+                      <Button size="sm" onClick={() => saveSecret(f.key)}>Save</Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ))}
             <div className="text-[11px] text-white/40">
               Secrets are encrypted at rest and never re-displayed. Environment variables
-              (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEVSTUDIO_GITHUB_TOKEN) override
-              these if set.
+              (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEVSTUDIO_GITHUB_TOKEN,
+              EMERGENT_UNIVERSAL_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+              AWS_REGION) override these if set.
             </div>
           </div>
         </div>
