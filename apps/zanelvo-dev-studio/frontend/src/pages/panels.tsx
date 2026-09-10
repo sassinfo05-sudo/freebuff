@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Select } from "@/components/ui/Select";
+import { Textarea } from "@/components/ui/Textarea";
 
 // --- Repository browser ---------------------------------------------------------------
 
@@ -136,6 +137,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   gemini: "Gemini",
+  gemini_enterprise: "Gemini Enterprise Agent Platform",
   bedrock: "Amazon Bedrock",
   emergent: "Emergent",
 };
@@ -401,7 +403,7 @@ export function GitHubPanel() {
 
 // --- Settings ----------------------------------------------------------------------------
 
-const SECRET_FIELDS: { key: string; label: string; placeholder: string; group: string }[] = [
+const SECRET_FIELDS: { key: string; label: string; placeholder: string; group: string; multiline?: boolean }[] = [
   { key: "github_pat", label: "GitHub Personal Access Token", placeholder: "ghp_…", group: "GitHub" },
   { key: "anthropic_api_key", label: "Anthropic API Key", placeholder: "sk-ant-…", group: "Native API keys" },
   { key: "openai_api_key", label: "OpenAI API Key", placeholder: "sk-…", group: "Native API keys" },
@@ -411,8 +413,11 @@ const SECRET_FIELDS: { key: string; label: string; placeholder: string; group: s
   { key: "aws_secret_access_key", label: "AWS Secret Access Key", placeholder: "…", group: "Amazon Bedrock" },
   { key: "aws_session_token", label: "AWS Session Token (optional, for temporary credentials)", placeholder: "…", group: "Amazon Bedrock" },
   { key: "aws_region", label: "AWS Region", placeholder: "us-east-1", group: "Amazon Bedrock" },
+  { key: "gcp_project_id", label: "GCP Project ID", placeholder: "my-project-123", group: "Gemini Enterprise Agent Platform" },
+  { key: "gcp_location", label: "GCP Location", placeholder: "us-central1", group: "Gemini Enterprise Agent Platform" },
+  { key: "gcp_service_account_json", label: "Service Account JSON (optional — paste the full key file contents)", placeholder: '{"type": "service_account", …}', group: "Gemini Enterprise Agent Platform", multiline: true },
 ];
-const SECRET_GROUPS = ["GitHub", "Native API keys", "Amazon Bedrock", "Emergent"];
+const SECRET_GROUPS = ["GitHub", "Native API keys", "Amazon Bedrock", "Gemini Enterprise Agent Platform", "Emergent"];
 
 export function SettingsPanel() {
   const [caps, setCaps] = useState<any[]>([]);
@@ -470,6 +475,15 @@ export function SettingsPanel() {
                     IAM role). A region is always required.
                   </div>
                 )}
+                {group === "Gemini Enterprise Agent Platform" && (
+                  <div className="text-[11px] text-white/40 -mt-1">
+                    The same Gemini models, routed through Google Cloud (formerly Vertex AI) for
+                    GCP-native governance and data residency. Service account JSON is optional —
+                    if left blank, it falls back to Google's Application Default Credentials
+                    (gcloud login or an attached GCP service account). A project ID is always
+                    required; location defaults to us-central1.
+                  </div>
+                )}
                 {SECRET_FIELDS.filter((f) => f.group === group).map((f) => (
                   <div key={f.key}>
                     <label className="text-xs text-white/50">
@@ -478,12 +492,21 @@ export function SettingsPanel() {
                         <Badge className="ml-1 bg-emerald-500/20 text-emerald-300 border-0">configured</Badge>
                       )}
                     </label>
-                    <div className="flex gap-1.5 mt-1">
-                      <Input type="password" value={draft[f.key] || ""}
-                        onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
-                        placeholder={f.placeholder} />
-                      <Button size="sm" onClick={() => saveSecret(f.key)}>Save</Button>
-                    </div>
+                    {f.multiline ? (
+                      <div className="space-y-1.5 mt-1">
+                        <Textarea rows={4} value={draft[f.key] || ""}
+                          onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                          placeholder={f.placeholder} />
+                        <Button size="sm" onClick={() => saveSecret(f.key)}>Save</Button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-1.5 mt-1">
+                        <Input type="password" value={draft[f.key] || ""}
+                          onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                          placeholder={f.placeholder} />
+                        <Button size="sm" onClick={() => saveSecret(f.key)}>Save</Button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -492,7 +515,8 @@ export function SettingsPanel() {
               Secrets are encrypted at rest and never re-displayed. Environment variables
               (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEVSTUDIO_GITHUB_TOKEN,
               EMERGENT_UNIVERSAL_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
-              AWS_REGION) override these if set.
+              AWS_REGION, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION,
+              GOOGLE_APPLICATION_CREDENTIALS_JSON) override these if set.
             </div>
           </div>
         </div>

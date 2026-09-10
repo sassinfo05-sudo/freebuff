@@ -89,6 +89,9 @@ async def capabilities(user: str = Depends(require_devstudio_access)):
     bedrock_ready = bool(secrets["aws_region"])  # key pair optional — default AWS chain can cover it
     out.append({"name": "bedrock_provider", "available": bedrock_ready,
                  "detail": None if bedrock_ready else "aws_region not configured (AWS_REGION also works)"})
+    gemini_ent_ready = bool(secrets["gcp_project_id"])  # service account json optional — ADC can cover it
+    out.append({"name": "gemini_enterprise_provider", "available": gemini_ent_ready,
+                 "detail": None if gemini_ent_ready else "gcp_project_id not configured (GOOGLE_CLOUD_PROJECT also works)"})
     out.append({"name": "emergent_provider", "available": False,
                  "detail": "Intentional stub — see docs/EMERGENT_INTEGRATION_HANDOFF.md"})
     return {"capabilities": out}

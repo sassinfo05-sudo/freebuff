@@ -38,10 +38,10 @@ an independent second opinion from a different lab than the implementer (with Cl
 fallback). See the comment at the top of `app/devstudio/providers/registry.py` for the full
 reasoning.
 
-## Credentials: native keys, Amazon Bedrock, or Emergent
+## Credentials: native keys, Amazon Bedrock, Gemini Enterprise, or Emergent
 
 Every role's provider/model is independently overridable from Settings → Agents — including its
-*fallback* provider/model, not just its primary — regardless of which preset is applied. Three
+*fallback* provider/model, not just its primary — regardless of which preset is applied. Four
 credential paths are available, side by side, from Settings → Secrets:
 
 - **Native per-vendor API keys** — Anthropic, OpenAI, Gemini. One key each; this is what the three
@@ -50,13 +50,23 @@ credential paths are available, side by side, from Settings → Secrets:
   (data residency, existing AWS billing, Bedrock provisioned throughput, VPC-only egress). Needs
   an `aws_region`; the access key/secret pair is optional — leave it blank to use boto3's own
   default AWS credential chain (env vars, `~/.aws/credentials`, an EC2/ECS/Lambda IAM role).
+- **Gemini Enterprise Agent Platform** (Google Cloud's product formerly known as Vertex AI) — the
+  same Gemini models, routed through GCP instead of the plain Gemini Developer API (VPC Service
+  Controls, CMEK, data residency, org-policy controls, existing GCP billing). Needs a
+  `gcp_project_id`; a service account key (pasted as JSON) is optional — leave it blank to use
+  Google's own Application Default Credentials (`gcloud auth application-default login`, or an
+  attached GCE/GKE/Cloud Run service account). Vertex AI does not accept API keys at all, so this
+  is a genuinely separate credential path from the plain Gemini key above, not just an alternate
+  region for it.
 - **Emergent Universal Key** — intentional stub, see
   [`docs/EMERGENT_INTEGRATION_HANDOFF.md`](../../docs/EMERGENT_INTEGRATION_HANDOFF.md).
 
-None of the three presets route through Bedrock or Emergent by default — pick a role in Settings →
-Agents and set its provider explicitly to opt in, without changing what everyone else uses. See
-`app/devstudio/providers/bedrock_provider.py` for exactly how Bedrock credentials resolve and why
-its model IDs need confirming against the Bedrock console before production use.
+None of the three presets route through Bedrock, Gemini Enterprise, or Emergent by default — pick
+a role in Settings → Agents and set its provider explicitly to opt in, without changing what
+everyone else uses. See `app/devstudio/providers/bedrock_provider.py` and
+`app/devstudio/providers/gemini_enterprise_provider.py` for exactly how each credential path
+resolves and, for Bedrock, why its model IDs need confirming against the AWS console before
+production use.
 
 ## Running it
 
@@ -91,7 +101,7 @@ pip install pytest pytest-xdist
 python -m pytest tests/ -q
 ```
 
-53 deterministic tests (state machine, anti-loop engine, command policy, execution/testing-service
+57 deterministic tests (state machine, anti-loop engine, command policy, execution/testing-service
 cwd safety, file safety, diff parsing, provider registry) — no database or network required.
 
 ## What's real vs. what needs credentials
@@ -106,8 +116,9 @@ actually do anything, and say so clearly (never silently) when they don't have t
   `GEMINI_API_KEY` are only needed if you want the Reviewer/Design roles' primary models rather
   than their Claude fallback. A task that reaches an unconfigured provider goes to `BLOCKED` with
   a clear reason — it never fakes a result. Amazon Bedrock (`aws_region` + optionally an AWS key
-  pair) and the Emergent Universal Key are additional opt-in credential paths — see "Credentials"
-  above — not required unless a role is explicitly pointed at them.
+  pair), Gemini Enterprise Agent Platform (`gcp_project_id` + optionally a service account key),
+  and the Emergent Universal Key are additional opt-in credential paths — see "Credentials" above
+  — not required unless a role is explicitly pointed at them.
 
 Browser QA additionally needs `pip install -r requirements-devstudio.txt` (Playwright); without
 it, browser runs are recorded as `unavailable`, not silently skipped.

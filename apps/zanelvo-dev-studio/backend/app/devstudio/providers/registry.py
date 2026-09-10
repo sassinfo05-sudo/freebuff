@@ -37,11 +37,13 @@ than assumed — see the commit that added the OpenAI/Gemini providers.
 
 Credential paths (Settings > Secrets, or the equivalent env vars): native per-vendor API keys
 (anthropic/openai/gemini — one key each), Amazon Bedrock (an AWS access key/secret pair + region,
-or the default AWS credential chain if no key pair is stored — see bedrock_provider.py), and the
+or the default AWS credential chain if no key pair is stored — see bedrock_provider.py), Google's
+Gemini Enterprise Agent Platform (a GCP project/location + optional service account JSON, or
+Application Default Credentials if none is stored — see gemini_enterprise_provider.py), and the
 Emergent Universal Key (intentional stub, see emergent_provider.py). None of the three presets
-route through Bedrock or Emergent by default; both are available as an explicit per-role override
-(Settings > Agents > pick a role > choose provider) for deployments that need them, without
-changing what ships to everyone else.
+route through Bedrock, Gemini Enterprise, or Emergent by default; all three are available as an
+explicit per-role override (Settings > Agents > pick a role > choose provider) for deployments
+that need them, without changing what ships to everyone else.
 """
 from __future__ import annotations
 
@@ -51,6 +53,7 @@ from .anthropic_provider import AnthropicProvider
 from .base import LLMProvider, ModelInfo
 from .bedrock_provider import BedrockProvider
 from .emergent_provider import EmergentUniversalKeyProvider
+from .gemini_enterprise_provider import GeminiEnterpriseProvider
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
 
@@ -58,6 +61,7 @@ _PROVIDER_CLASSES: Dict[str, Type[LLMProvider]] = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
+    "gemini_enterprise": GeminiEnterpriseProvider,
     "bedrock": BedrockProvider,
     "emergent": EmergentUniversalKeyProvider,
 }

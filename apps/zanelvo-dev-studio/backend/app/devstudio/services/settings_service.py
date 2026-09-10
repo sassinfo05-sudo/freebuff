@@ -16,7 +16,8 @@ from ..providers.registry import ModelRegistry
 
 _SECRET_KEYS = ("github_pat", "anthropic_api_key", "openai_api_key", "gemini_api_key",
                  "emergent_universal_key", "aws_access_key_id", "aws_secret_access_key",
-                 "aws_session_token", "aws_region")
+                 "aws_session_token", "aws_region", "gcp_project_id", "gcp_location",
+                 "gcp_service_account_json")
 
 
 async def get_settings() -> ApplicationSettings:
@@ -59,6 +60,12 @@ async def get_secret(name: str) -> Optional[str]:
         "aws_secret_access_key": "AWS_SECRET_ACCESS_KEY",
         "aws_session_token": "AWS_SESSION_TOKEN",
         "aws_region": "AWS_REGION",
+        "gcp_project_id": "GOOGLE_CLOUD_PROJECT",
+        "gcp_location": "GOOGLE_CLOUD_LOCATION",
+        # Not the real GOOGLE_APPLICATION_CREDENTIALS (a file path, already read automatically by
+        # google-auth's ADC chain) — this is Dev Studio's own name for the raw JSON key contents,
+        # for parity with how every other secret here is set via an env var override.
+        "gcp_service_account_json": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
     }
     env_val = os.environ.get(env_map.get(name, ""), "")
     if env_val:
@@ -78,11 +85,11 @@ async def secrets_status() -> Dict[str, bool]:
 async def build_model_registry() -> ModelRegistry:
     """Assemble a ModelRegistry with whatever provider credentials are currently configured.
 
-    Every provider except Bedrock takes a single API key string. Bedrock uses the standard AWS
-    credential model instead — an access key/secret pair plus a region — so its registry value is
-    a small dict rather than a string; BedrockProvider knows how to consume that shape (and falls
-    back to boto3's own default credential chain if the key pair isn't set — see
-    providers/bedrock_provider.py).
+    Most providers take a single API key string. Bedrock and Gemini Enterprise Agent Platform use
+    their cloud vendor's own multi-field credential model instead, so their registry values are
+    small dicts rather than a string — BedrockProvider and GeminiEnterpriseProvider know how to
+    consume those shapes, and both fall back to their vendor's own default credential chain when
+    the explicit fields aren't set (see the two provider modules).
     """
     keys: Dict[str, Any] = {
         "anthropic": await get_secret("anthropic_api_key"),
@@ -94,6 +101,11 @@ async def build_model_registry() -> ModelRegistry:
             "secret_access_key": await get_secret("aws_secret_access_key"),
             "session_token": await get_secret("aws_session_token"),
             "region": await get_secret("aws_region"),
+        },
+        "gemini_enterprise": {
+            "project_id": await get_secret("gcp_project_id"),
+            "location": await get_secret("gcp_location"),
+            "service_account_json": await get_secret("gcp_service_account_json"),
         },
     }
     return ModelRegistry(keys)

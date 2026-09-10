@@ -7,6 +7,8 @@
 #
 anthropic==0.69.0
 openai==1.109.1
+# Also covers GeminiEnterpriseProvider (Vertex AI / Gemini Enterprise Agent Platform) — same SDK,
+# different client auth; google-auth (for service-account credentials) ships as its dependency.
 google-genai==1.75.0
 playwright==1.55.0
 # boto3's own release cadence is far faster than the pinned packages above and its exact current
