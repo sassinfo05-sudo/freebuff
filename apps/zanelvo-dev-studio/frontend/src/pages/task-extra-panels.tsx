@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react";
-import { RotateCcw, Save, Play, Square, Link2, Camera } from "lucide-react";
+import { RotateCcw, Save, Play, Square, Link2, Camera, History, MonitorPlay } from "lucide-react";
 import devstudio from "@/lib/devstudio";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import type { Checkpoint } from "@/lib/types";
 
 // --- Checkpoints ---------------------------------------------------------------------------
 
 export function CheckpointsPanel({ taskId }: { taskId: string }) {
-  const [checkpoints, setCheckpoints] = useState<any[]>([]);
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState<{ id: string; label: string } | null>(null);
 
   async function load() {
     const { data } = await devstudio.checkpoints(taskId);
@@ -37,10 +41,10 @@ export function CheckpointsPanel({ taskId }: { taskId: string }) {
     }
   }
 
-  async function restore(id: string, checkpointLabel: string) {
-    if (!window.confirm(`Restore "${checkpointLabel}"? This discards uncommitted changes made after it.`)) return;
+  async function restore() {
+    if (!restoreTarget) return;
     try {
-      await devstudio.restoreCheckpoint(taskId, id, true);
+      await devstudio.restoreCheckpoint(taskId, restoreTarget.id, true);
       toast.success("Restored");
       load();
     } catch (e: any) {
@@ -58,17 +62,27 @@ export function CheckpointsPanel({ taskId }: { taskId: string }) {
         </Button>
       </div>
       {checkpoints.map((c) => (
-        <div key={c.id} className="rounded-lg border border-white/10 bg-white/5 p-2.5 mb-2 text-xs">
+        <div key={c.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs hover:border-white/15 transition-colors">
           <div className="flex items-center justify-between gap-2">
             <span className="text-white/85 font-medium truncate">{c.label}</span>
-            <Button size="sm" variant="outline" onClick={() => restore(c.id, c.label)}>
+            <Button size="sm" variant="outline" onClick={() => setRestoreTarget({ id: c.id, label: c.label })}>
               <RotateCcw className="w-3 h-3" /> Restore
             </Button>
           </div>
           <div className="text-white/40 mt-1 font-mono">{c.commit_sha?.slice(0, 10)} · {c.branch}</div>
         </div>
       ))}
-      {!checkpoints.length && <div className="text-xs text-white/40">No checkpoints yet.</div>}
+      {!checkpoints.length && <EmptyState compact icon={History} title="No checkpoints yet" description="Save one before a risky change." />}
+
+      <ConfirmDialog
+        open={!!restoreTarget}
+        onOpenChange={(v) => !v && setRestoreTarget(null)}
+        title={`Restore "${restoreTarget?.label ?? ""}"?`}
+        description="This discards any uncommitted changes made after this checkpoint. It cannot be undone."
+        confirmLabel="Restore"
+        danger
+        onConfirm={restore}
+      />
     </div>
   );
 }
@@ -112,7 +126,7 @@ export function PreviewPanel({ taskId }: { taskId: string }) {
   return (
     <div className="h-full overflow-y-auto p-3 space-y-3">
       <div className="flex gap-1.5">
-        <Button size="sm" variant="outline" disabled={busy} onClick={startLive}>
+        <Button size="sm" variant="outline" loading={busy} onClick={startLive}>
           <Play className="w-3.5 h-3.5" /> Live local
         </Button>
         <Button size="sm" variant="outline" onClick={stopLive}>
@@ -124,29 +138,28 @@ export function PreviewPanel({ taskId }: { taskId: string }) {
       </div>
       <div className="flex gap-1.5">
         <Input value={externalUrl} onChange={(e) => setExternalUrl(e.target.value)}
-          placeholder="https://your-preview-env…" />
+          placeholder="https://your-preview-env…" onKeyDown={(e) => e.key === "Enter" && attachExternal()} />
         <Button size="sm" variant="outline" onClick={attachExternal}>
           <Link2 className="w-3.5 h-3.5" />
         </Button>
       </div>
       {state && (
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs space-y-1">
+        <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs space-y-1.5 animate-fade-up">
           <div className="flex items-center gap-2">
-            <Badge className="border-white/20 text-white/60">{state.mode}</Badge>
-            <Badge className={state.status === "running" || state.status === "attached"
-              ? "border-emerald-500/40 text-emerald-300" : "border-amber-500/40 text-amber-300"}>
+            <Badge className="border-white/15 text-white/60">{state.mode}</Badge>
+            <Badge tone={state.status === "running" || state.status === "attached" ? "success" : "warning"} dot>
               {state.status}
             </Badge>
           </div>
           {state.url && (
-            <a href={state.url} target="_blank" rel="noreferrer" className="text-indigo-300 underline block break-all">
+            <a href={state.url} target="_blank" rel="noreferrer" className="text-indigo-300 hover:text-indigo-200 underline block break-all transition-colors">
               {state.url}
             </a>
           )}
           {state.detail && <div className="text-white/50">{state.detail}</div>}
         </div>
       )}
-      {!state && <div className="text-xs text-white/40">No preview started yet.</div>}
+      {!state && <EmptyState compact icon={MonitorPlay} title="No preview started yet" />}
     </div>
   );
 }

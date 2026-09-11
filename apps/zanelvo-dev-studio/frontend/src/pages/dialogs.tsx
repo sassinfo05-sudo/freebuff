@@ -44,11 +44,25 @@ export function NewProjectDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Connect a GitHub repository"
-      footer={<Button disabled={busy} onClick={submit}>{busy ? "Connecting…" : "Connect"}</Button>}
+      description="Dev Studio needs read/write access — configure a token in Settings if you haven't."
+      footer={
+        <Button loading={busy} disabled={!owner.trim() || !repo.trim()} onClick={submit}>
+          Connect
+        </Button>
+      }
     >
-      <Input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="Owner (e.g. your-username)" />
-      <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="Repository name" />
-      <Input value={branch} onChange={(e) => setBranchName(e.target.value)} placeholder="Default branch" />
+      <div>
+        <label className="text-xs text-white/50 block mb-1">Owner</label>
+        <Input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="e.g. your-username" />
+      </div>
+      <div>
+        <label className="text-xs text-white/50 block mb-1">Repository</label>
+        <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="Repository name" />
+      </div>
+      <div>
+        <label className="text-xs text-white/50 block mb-1">Default branch</label>
+        <Input value={branch} onChange={(e) => setBranchName(e.target.value)} placeholder="main" />
+      </div>
     </Dialog>
   );
 }
@@ -70,7 +84,8 @@ export function NewTaskDialog({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="New Task"
+      title="New task"
+      description="The Supervisor plans and runs this immediately after creation."
       footer={
         <Button
           disabled={!title.trim() || !text.trim()}
@@ -80,18 +95,27 @@ export function NewTaskDialog({
         </Button>
       }
     >
-      <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short title" />
-      <Select
-        value={mode}
-        onChange={(e) => setMode(e.target.value)}
-        options={["feature", "bugfix", "refactor", "chore", "investigation"].map((m) => ({ value: m, label: m }))}
-      />
-      <Textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={5}
-        placeholder="Describe the feature or bug in natural language…"
-      />
+      <div>
+        <label className="text-xs text-white/50 block mb-1">Title</label>
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Short title" autoFocus />
+      </div>
+      <div>
+        <label className="text-xs text-white/50 block mb-1">Mode</label>
+        <Select
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
+          options={["feature", "bugfix", "refactor", "chore", "investigation"].map((m) => ({ value: m, label: m }))}
+        />
+      </div>
+      <div>
+        <label className="text-xs text-white/50 block mb-1">Description</label>
+        <Textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={5}
+          placeholder="Describe the feature or bug in natural language…"
+        />
+      </div>
     </Dialog>
   );
 }

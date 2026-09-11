@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Plus, FolderGit2, Brain, Bot, Github, Settings as SettingsIcon, ListTodo, Circle, LogOut,
+  Plus, FolderGit2, Brain, Bot, Github, Settings as SettingsIcon, ListTodo, LogOut, Sparkles,
 } from "lucide-react";
 import devstudio from "@/lib/devstudio";
 import { toast } from "@/lib/toast";
@@ -8,24 +8,31 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { Badge } from "@/components/ui/Badge";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { SkeletonRows } from "@/components/ui/Skeleton";
+import { statusDotClass, formatStatusLabel } from "@/lib/status";
+import type { Project, Branch, Task } from "@/lib/types";
 import TaskView from "./TaskView";
 import { RepoBrowser, MemoryPanel, AgentsPanel, GitHubPanel, SettingsPanel } from "./panels";
 import { NewProjectDialog, NewTaskDialog } from "./dialogs";
 
-const STATUS_COLOR: Record<string, string> = {
-  COMPLETED: "bg-emerald-500", BLOCKED: "bg-amber-500", FAILED: "bg-red-500",
-  CANCELLED: "bg-zinc-400", READY_FOR_APPROVAL: "bg-indigo-500",
-};
-
 type View = "task" | "repo" | "memory" | "agents" | "github" | "settings";
+
+const NAV_ITEMS = [
+  ["repo", FolderGit2, "Repository"],
+  ["memory", Brain, "Project Memory"],
+  ["agents", Bot, "Agents"],
+  ["github", Github, "GitHub"],
+  ["settings", SettingsIcon, "Settings"],
+] as const;
 
 export default function DevStudioApp() {
   const { logout } = useAuth();
-  const [projects, setProjects] = useState<any[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [branches, setBranches] = useState<any[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [branch, setBranch] = useState<string | null>(null);
-  const [tasks, setTasks] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [view, setView] = useState<View>("task");
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -53,8 +60,8 @@ export default function DevStudioApp() {
     try {
       const { data } = await devstudio.listTasks(pid);
       setTasks(data.tasks);
-    } catch {
-      /* noop */
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not load tasks");
     }
   }, []);
 
@@ -94,11 +101,13 @@ export default function DevStudioApp() {
   const currentProject = projects.find((p) => p.id === projectId);
 
   return (
-    <div className="h-screen w-screen flex bg-[#0B0A16] text-white overflow-hidden">
+    <div className="h-screen w-screen flex bg-surface-0 text-white overflow-hidden">
       {/* LEFT SIDEBAR */}
-      <aside className="w-72 flex-shrink-0 flex flex-col border-r border-white/10 bg-[#0F0E1B]">
-        <div className="h-14 flex items-center gap-2 px-4 border-b border-white/10">
-          <div className="w-6 h-6 rounded-md bg-gradient-to-br from-indigo-500 via-fuchsia-500 to-amber-400" />
+      <aside className="w-72 flex-shrink-0 flex flex-col border-r border-white/10 bg-surface-1">
+        <div className="h-14 flex items-center gap-2.5 px-4 border-b border-white/10 flex-shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 via-fuchsia-500 to-amber-400 shadow-glow flex items-center justify-center flex-shrink-0">
+            <Sparkles className="w-3.5 h-3.5 text-white" strokeWidth={2.25} />
+          </div>
           <span className="font-semibold text-sm tracking-tight">Zanelvo Dev Studio</span>
         </div>
 
@@ -130,59 +139,67 @@ export default function DevStudioApp() {
           </Button>
         </div>
 
-        <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-widest text-white/40">Tasks</div>
-        <div className="flex-1 overflow-y-auto px-2">
-          <div className="space-y-0.5 pb-2">
-            {tasks.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => {
-                  setTaskId(t.id);
-                  setView("task");
-                }}
-                className={`w-full text-left px-2.5 py-2 rounded-lg text-xs flex items-start gap-2 transition ${
-                  taskId === t.id && view === "task" ? "bg-white/10 text-white" : "text-white/60 hover:bg-white/5 hover:text-white"
-                }`}
-              >
-                <Circle className={`w-2 h-2 mt-1 flex-shrink-0 rounded-full ${STATUS_COLOR[t.status] || "bg-sky-500"}`} fill="currentColor" />
-                <span className="flex-1 min-w-0">
-                  <div className="truncate">{t.title}</div>
-                  <div className="text-[10px] text-white/40 mt-0.5">{t.status}</div>
-                </span>
-              </button>
-            ))}
-            {!tasks.length && <div className="text-xs text-white/30 px-2 py-4">No tasks yet.</div>}
-          </div>
+        <div className="px-3.5 pt-3 pb-1.5 text-[10px] font-medium uppercase tracking-widest text-white/35 flex-shrink-0">
+          Tasks
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 min-h-0">
+          {loading && <SkeletonRows count={3} className="px-1" />}
+          {!loading && (
+            <div className="space-y-0.5 pb-2">
+              {tasks.map((t) => {
+                const active = taskId === t.id && view === "task";
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      setTaskId(t.id);
+                      setView("task");
+                    }}
+                    className={`w-full text-left pl-2.5 pr-2 py-2 rounded-lg text-xs flex items-start gap-2 transition-colors border-l-2 ${
+                      active
+                        ? "bg-white/[0.08] text-white border-indigo-400"
+                        : "text-white/60 hover:bg-white/[0.04] hover:text-white/90 border-transparent"
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 mt-1.5 flex-shrink-0 rounded-full ${statusDotClass(t.status)}`} />
+                    <span className="flex-1 min-w-0">
+                      <div className="truncate leading-snug">{t.title}</div>
+                      <div className="text-[10px] text-white/35 mt-0.5 capitalize">{formatStatusLabel(t.status)}</div>
+                    </span>
+                  </button>
+                );
+              })}
+              {!tasks.length && projectId && (
+                <EmptyState compact icon={ListTodo} title="No tasks yet" description="Create one to get started." />
+              )}
+            </div>
+          )}
         </div>
 
-        <nav className="border-t border-white/10 p-2 space-y-0.5">
-          {(
-            [
-              ["repo", FolderGit2, "Repository"],
-              ["memory", Brain, "Project Memory"],
-              ["agents", Bot, "Agents"],
-              ["github", Github, "GitHub"],
-              ["settings", SettingsIcon, "Settings"],
-            ] as const
-          ).map(([key, Icon, label]) => (
+        <nav className="border-t border-white/10 p-2 space-y-0.5 flex-shrink-0">
+          {NAV_ITEMS.map(([key, Icon, label]) => (
             <button
               key={key}
               onClick={() => setView(key)}
-              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs transition ${
-                view === key ? "bg-white/10 text-white" : "text-white/50 hover:bg-white/5 hover:text-white"
+              className={`w-full flex items-center gap-2 pl-2.5 pr-2 py-1.5 rounded-lg text-xs transition-colors border-l-2 ${
+                view === key
+                  ? "bg-white/[0.08] text-white border-indigo-400"
+                  : "text-white/50 hover:bg-white/[0.04] hover:text-white/90 border-transparent"
               }`}
             >
               <Icon className="w-3.5 h-3.5" /> {label}
             </button>
           ))}
         </nav>
-        <div className="p-3 border-t border-white/10 text-[11px] text-white/40 flex items-center justify-between">
+        <div className="p-3 border-t border-white/10 text-[11px] text-white/40 flex items-center justify-between flex-shrink-0">
           {currentProject?.last_indexed_commit_sha ? (
-            <Badge className="border-white/20 text-white/50">{currentProject.last_indexed_commit_sha.slice(0, 7)}</Badge>
+            <Badge className="border-white/15 text-white/50 font-mono">
+              {currentProject.last_indexed_commit_sha.slice(0, 7)}
+            </Badge>
           ) : (
             <span />
           )}
-          <button onClick={logout} className="flex items-center gap-1 hover:text-white">
+          <button onClick={logout} className="flex items-center gap-1 hover:text-white transition-colors">
             <LogOut className="w-3.5 h-3.5" /> Sign out
           </button>
         </div>
@@ -192,11 +209,23 @@ export default function DevStudioApp() {
       <div className="flex-1 min-w-0 flex flex-col">
         {view === "task" && taskId && <TaskView taskId={taskId} onTaskChanged={() => refreshTasks(projectId)} />}
         {view === "task" && !taskId && (
-          <div className="flex-1 grid place-items-center text-white/40 text-sm">
-            <div className="text-center">
-              <ListTodo className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              Select a task, or create a new one.
-            </div>
+          <div className="flex-1 grid place-items-center">
+            <EmptyState
+              icon={ListTodo}
+              title={projectId ? "No task selected" : "Connect a repository to begin"}
+              description={
+                projectId
+                  ? "Select a task from the sidebar, or create a new one."
+                  : "Zanelvo Dev Studio needs a GitHub repository to analyze, plan against, and edit."
+              }
+              action={
+                !projectId ? (
+                  <Button size="sm" onClick={() => setNewProjectOpen(true)}>
+                    <Plus className="w-3.5 h-3.5" /> Connect a repository
+                  </Button>
+                ) : undefined
+              }
+            />
           </div>
         )}
         {view === "repo" && projectId && branch && <RepoBrowser projectId={projectId} branch={branch} />}

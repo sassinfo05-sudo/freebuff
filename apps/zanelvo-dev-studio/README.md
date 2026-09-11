@@ -14,6 +14,19 @@ See the root [`CLAUDE.md`](../../CLAUDE.md) for this monorepo's conventions and 
 [`docs/EMERGENT_INTEGRATION_HANDOFF.md`](../../docs/EMERGENT_INTEGRATION_HANDOFF.md) for the one
 piece intentionally left unfinished (the Emergent provider).
 
+## UI
+
+A small design system lives under `frontend/src/components/ui/` — shared tokens
+(`tailwind.config.js`: a `surface` color scale, motion/shadow tokens, a self-hosted Inter Variable
+font) plus primitives (`Button`, `Badge`, `Input`, `Select`, `Dialog`, `Tabs`) and higher-level
+pieces (`PageHeader`, `EmptyState`, `Skeleton`, `ConfirmDialog`, `PromptDialog`, `StatusBadge`) used
+across every page instead of one-off markup per screen. Status→color mapping lives in one place
+(`lib/status.ts`) rather than being duplicated per component. Native `window.prompt`/`confirm`
+dialogs (commit message, checkpoint restore) were replaced with in-app dialogs that match the rest
+of the UI and support Escape-to-close. Settings (capabilities/secrets/test-models) and Agents (10
+roles × full provider/model/fallback config) are large enough that they're organized as tabs and
+collapsible cards respectively, rather than one long scroll.
+
 ## Models: three presets, not one vendor
 
 Every agent's model is independently configurable (Settings → Agents), and three presets pick
