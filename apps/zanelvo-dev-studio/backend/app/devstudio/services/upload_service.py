@@ -1,7 +1,11 @@
 """UploadService — task/project attachments. Images are exposed to vision-capable agents on
-request only (never auto-injected into every context, per spec)."""
+request only (never auto-injected into every context, per spec).
+
+Blobs live on local disk under var/devstudio/uploads (Dev Studio is a self-hosted, single-process
+tool with a persistent filesystem — no ephemeral-pod constraint to work around)."""
 from __future__ import annotations
 
+import base64
 import os
 import uuid
 from typing import List, Optional
@@ -50,4 +54,42 @@ async def list_uploads(task_id: str) -> List[Upload]:
 async def get_upload(upload_id: str) -> Optional[Upload]:
     from bson import ObjectId
     doc = await get_db().ds_uploads.find_one({"_id": ObjectId(upload_id)})
-    return Upload.from_mongo(doc)
+    return Upload.from_mongo(doc) if doc else None
+
+
+async def read_upload_bytes(upload: Upload) -> bytes:
+    """Fetch an upload's raw bytes (used to serve downloads and to base64-encode images for
+    vision-capable agents on request)."""
+    with open(upload.path, "rb") as fh:
+        return fh.read()
+
+
+async def read_upload_image_b64(upload: Upload) -> str:
+    """Base64-encode an image upload for a provider's generate_with_vision(images_b64=...)."""
+    return base64.b64encode(await read_upload_bytes(upload)).decode()
+
+
+async def set_vision_attachment(upload_id: str, attach: bool) -> Optional[Upload]:
+    """Mark/unmark an image upload for delivery to vision-capable agents (e.g. Design). Non-images
+    can never be attached to vision — the toggle is a no-op guarded here."""
+    from bson import ObjectId
+
+    up = await get_upload(upload_id)
+    if up is None:
+        return None
+    if attach and not up.is_image:
+        raise UploadRejected("Only image uploads can be attached to a vision model")
+    await get_db().ds_uploads.update_one({"_id": ObjectId(upload_id)},
+                                         {"$set": {"attach_to_vision": bool(attach)}})
+    return await get_upload(upload_id)
+
+
+async def list_vision_images(task_id: str) -> List[str]:
+    """Base64-encoded bytes of every image on this task flagged attach_to_vision — supplied to a
+    vision-capable agent ON REQUEST only (never auto-injected into every context)."""
+    out: List[str] = []
+    docs = get_db().ds_uploads.find({"task_id": task_id, "is_image": True, "attach_to_vision": True})
+    async for d in docs:
+        up = Upload.from_mongo(d)
+        out.append(await read_upload_image_b64(up))
+    return out

@@ -82,8 +82,16 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
 
   async function send() {
     if (!message.trim()) return;
-    await devstudio.postMessage(taskId, message.trim());
+    const text = message.trim();
     setMessage("");
+    const { data } = await devstudio.postMessage(taskId, text);
+    // First message on a blank chat backfills request_text + auto-titles server-side — refresh
+    // so the sidebar/header pick up the new title immediately instead of waiting on the next
+    // state_change SSE event.
+    if (data?.task) {
+      setTask(data.task);
+      onTaskChanged?.();
+    }
   }
 
   async function run() {
@@ -180,8 +188,12 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
             {!events.length && (
               <EmptyState
                 icon={Bot}
-                title="No activity yet"
-                description='Hit Run, or message the Supervisor below to get started.'
+                title={task.request_text ? "No activity yet" : "Start the conversation"}
+                description={
+                  task.request_text
+                    ? "Hit Run, or message the Supervisor below to get started."
+                    : "Describe the feature or bug below — the Supervisor plans and runs it the moment you send."
+                }
               />
             )}
             {events.map((e, i) => (
@@ -201,6 +213,7 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
 
         <div className="p-3 border-t border-white/10 flex gap-2 flex-shrink-0">
           <Textarea
+            autoFocus
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             rows={1}
@@ -210,7 +223,11 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
                 send();
               }
             }}
-            placeholder='Message the Supervisor — e.g. "Continue.", "Only change frontend.", "Run tests again."'
+            placeholder={
+              task.request_text
+                ? 'Message the Supervisor — e.g. "Continue.", "Only change frontend.", "Run tests again."'
+                : "Describe the feature or bug you want built…"
+            }
             className="min-h-9"
           />
           <Button size="icon" onClick={send} disabled={!message.trim()}>
@@ -233,7 +250,7 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
 
         <TabsContent value="plan" className="flex-1 min-h-0 overflow-y-auto p-3">
           {plan.map((p) => (
-            <div key={p.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs hover:border-white/15 transition-colors">
+            <div key={p.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs hover:border-white/15 hover:-translate-y-0.5 hover:shadow-soft transition-all duration-150">
               <div className="flex items-center gap-1.5">
                 <StatusBadge status={p.status} />
                 <span className="text-white/40 capitalize">{(p.assigned_agent || "").replace(/_/g, " ")}</span>
@@ -293,7 +310,7 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
             <TestTube2 className="w-3.5 h-3.5" /> Run tests now
           </Button>
           {tests.map((r) => (
-            <div key={r.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs">
+            <div key={r.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs hover:border-white/15 hover:-translate-y-0.5 hover:shadow-soft transition-all duration-150">
               <div className="flex items-center gap-1.5">
                 <StatusBadge status={r.status} />
                 <span className="text-white/50">{r.test_type}</span>

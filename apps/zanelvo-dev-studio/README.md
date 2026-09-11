@@ -10,9 +10,7 @@ It is a tool, not a product: no signup, no billing, no multi-user accounts. One 
 gates the whole thing.
 
 See the root [`CLAUDE.md`](../../CLAUDE.md) for this monorepo's conventions and this app's own
-[`CLAUDE.md`](./CLAUDE.md) for how the code here is organized. See
-[`docs/EMERGENT_INTEGRATION_HANDOFF.md`](../../docs/EMERGENT_INTEGRATION_HANDOFF.md) for the one
-piece intentionally left unfinished (the Emergent provider).
+[`CLAUDE.md`](./CLAUDE.md) for how the code here is organized.
 
 ## UI
 
@@ -71,8 +69,14 @@ credential paths are available, side by side, from Settings → Secrets:
   attached GCE/GKE/Cloud Run service account). Vertex AI does not accept API keys at all, so this
   is a genuinely separate credential path from the plain Gemini key above, not just an alternate
   region for it.
-- **Emergent Universal Key** — intentional stub, see
-  [`docs/EMERGENT_INTEGRATION_HANDOFF.md`](../../docs/EMERGENT_INTEGRATION_HANDOFF.md).
+- **Emergent Universal Key** — one key gives access to GPT/Claude/Gemini model families through
+  Emergent's integration proxy (`emergentintegrations`, via `litellm`). Real implementation, not a
+  stub — see `app/devstudio/providers/emergent_provider.py`. Its optional dependency is
+  deliberately kept in its own file, `requirements-emergent.txt`, rather than
+  `requirements-devstudio.txt`: every published version of `emergentintegrations` hard-pins
+  `openai==1.99.9`, which conflicts with the `openai==1.109.1` pin the native OpenAI provider
+  uses — pip can't satisfy both in one environment, so see that file's header for the tradeoff
+  before installing it alongside the others.
 
 None of the three presets route through Bedrock, Gemini Enterprise, or Emergent by default — pick
 a role in Settings → Agents and set its provider explicitly to opt in, without changing what
@@ -84,9 +88,11 @@ production use.
 Settings → "Test providers & models" gives every provider/model in the catalog its own **Test**
 button — one real, minimal request (`POST /api/devstudio/providers/test`) against whatever
 credentials are currently saved, never unsaved form input. It reports exactly one of four outcomes
-(never a fake pass): `ok` with latency, `not configured` (no credentials), `stub` (Emergent), or a
-real failure with the provider's own error text — this is also the fastest way to confirm a
-Bedrock/Gemini Enterprise model ID actually resolves before pointing a role at it.
+(never a fake pass): `ok` with latency, `not configured` (no credentials), `stub` (reserved for a
+future unfinished provider — nothing currently uses it), or a real failure with the provider's own
+error text — this is also the fastest way to confirm a Bedrock/Gemini Enterprise model ID actually
+resolves before pointing a role at it. A provider's last-observed health also lands in
+`GET /api/devstudio/providers/{provider}/health`, recorded from real calls only.
 
 ## Running it
 
@@ -121,8 +127,9 @@ pip install pytest pytest-xdist
 python -m pytest tests/ -q
 ```
 
-57 deterministic tests (state machine, anti-loop engine, command policy, execution/testing-service
-cwd safety, file safety, diff parsing, provider registry) — no database or network required.
+67 deterministic tests (state machine, anti-loop engine, command policy, execution/testing-service
+cwd safety, file safety, diff parsing, provider registry, Emergent provider) — no database or
+network required.
 
 ## What's real vs. what needs credentials
 

@@ -5,6 +5,7 @@ type Tone = "neutral" | "success" | "warning" | "danger" | "info" | "brand";
 interface Props extends HTMLAttributes<HTMLSpanElement> {
   tone?: Tone;
   dot?: boolean;
+  pulse?: boolean;
 }
 
 const toneClasses: Record<Tone, string> = {
@@ -25,7 +26,7 @@ const dotClasses: Record<Tone, string> = {
   brand: "bg-indigo-400",
 };
 
-export function Badge({ className = "", tone, dot = false, children, ...props }: Props) {
+export function Badge({ className = "", tone, dot = false, pulse = false, children, ...props }: Props) {
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none whitespace-nowrap ${
@@ -33,7 +34,9 @@ export function Badge({ className = "", tone, dot = false, children, ...props }:
       } ${className}`}
       {...props}
     >
-      {dot && tone && <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${dotClasses[tone]}`} />}
+      {dot && tone && (
+        <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${dotClasses[tone]} ${pulse ? "animate-pulse-ring" : ""}`} />
+      )}
       {children}
     </span>
   );

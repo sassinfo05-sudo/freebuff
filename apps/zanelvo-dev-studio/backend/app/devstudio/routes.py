@@ -8,17 +8,17 @@ from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 from .agents import git_agent, orchestrator, qa_agent, registry as agent_registry
 from .models import (AgentRole, CreateProjectRequest, CreateTaskRequest, MemoryCategory,
-                       ModelPreset, TaskMessageRequest)
+                       ModelPreset, TaskMessageRequest, TaskUpdateRequest)
 from .providers import registry as provider_registry
 from .security import require_devstudio_access, require_devstudio_write
 from .services import (activity_service, browser_service, checkpoint_service, execution_service,
                          github_provider, indexer, memory_service, preview_service,
-                         repository_service, settings_service, task_manager, upload_service,
-                         usage_tracker, workspace_manager)
+                         provider_health, repository_service, settings_service, task_manager,
+                         upload_service, usage_tracker, workspace_manager)
 from .services.diff_service import get_diff_summary
 from .services.file_service import FileService
 
@@ -92,8 +92,8 @@ async def capabilities(user: str = Depends(require_devstudio_access)):
     gemini_ent_ready = bool(secrets["gcp_project_id"])  # service account json optional — ADC can cover it
     out.append({"name": "gemini_enterprise_provider", "available": gemini_ent_ready,
                  "detail": None if gemini_ent_ready else "gcp_project_id not configured (GOOGLE_CLOUD_PROJECT also works)"})
-    out.append({"name": "emergent_provider", "available": False,
-                 "detail": "Intentional stub — see docs/EMERGENT_INTEGRATION_HANDOFF.md"})
+    out.append({"name": "emergent_provider", "available": secrets["emergent_universal_key"],
+                 "detail": None if secrets["emergent_universal_key"] else "EMERGENT_UNIVERSAL_KEY not configured"})
     return {"capabilities": out}
 
 
@@ -123,7 +123,8 @@ async def test_provider_model(body: ProviderTestRequest, user: str = Depends(req
     only honest way to answer "does this actually work", per CLAUDE.md's evidence rules. Always
     returns 200 with a structured ok/false result (mirrors github/whoami's style) rather than an
     HTTP error, so the frontend can render every outcome — not configured, not implemented (the
-    Emergent stub), or a real failure (bad model id, auth error, network) — without exception
+    an unimplemented provider, if one exists), or a real failure (bad model id, auth error,
+    network) — without exception
     handling on every call site."""
     import time
 
@@ -143,6 +144,7 @@ async def test_provider_model(body: ProviderTestRequest, user: str = Depends(req
             max_tokens=8,
             temperature=0.0,
         )
+        await provider_health.record(body.provider, "ok")
         return {
             "ok": True,
             "provider": body.provider,
@@ -152,15 +154,33 @@ async def test_provider_model(body: ProviderTestRequest, user: str = Depends(req
             "usage": {"input_tokens": result.usage.input_tokens, "output_tokens": result.usage.output_tokens},
         }
     except ProviderNotConfigured as e:
+        await provider_health.record_exception(body.provider, e)
         return {"ok": False, "provider": body.provider, "model": body.model,
                  "error_type": "not_configured", "detail": str(e)}
     except ProviderNotImplemented as e:
         return {"ok": False, "provider": body.provider, "model": body.model,
                  "error_type": "not_implemented", "detail": str(e)}
     except Exception as e:  # noqa: BLE001 — a failed test call is a result to display, not a 500
+        await provider_health.record_exception(body.provider, e)
         return {"ok": False, "provider": body.provider, "model": body.model,
                  "error_type": "error", "detail": str(e)[:500],
                  "latency_ms": int((time.monotonic() - t0) * 1000)}
+
+
+@router.get("/providers/{provider}/health")
+async def provider_health_status(provider: str, user: str = Depends(require_devstudio_access)):
+    """Last-observed runtime status of a provider from REAL calls (used by a Universal Key
+    balance-style banner). `configured` reflects whether a credential/key is currently set."""
+    secret_map = {"emergent": "emergent_universal_key", "anthropic": "anthropic_api_key",
+                  "openai": "openai_api_key", "gemini": "gemini_api_key"}
+    configured = False
+    if provider in secret_map:
+        configured = bool(await settings_service.get_secret(secret_map[provider]))
+    health = await provider_health.get(provider)
+    return {"provider": provider, "configured": configured,
+            "status": (health or {}).get("status"),
+            "detail": (health or {}).get("detail", ""),
+            "checked_at": (health or {}).get("checked_at")}
 
 
 # --- Settings / secrets --------------------------------------------------------------------
@@ -367,6 +387,24 @@ async def get_task(task_id: str, user: str = Depends(require_devstudio_access)):
     return (await _require_task(task_id)).model_dump()
 
 
+@router.patch("/tasks/{task_id}")
+async def update_task(task_id: str, body: TaskUpdateRequest, user: str = Depends(require_devstudio_write)):
+    await _require_task(task_id)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        return (await task_manager.get_task(task_id)).model_dump()
+    return (await task_manager.update_task(task_id, **fields)).model_dump()
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, user: str = Depends(require_devstudio_write)):
+    """Soft-delete: the chat is archived (filtered out of list_tasks), never hard-deleted — its
+    plan/diff/test/checkpoint history stays intact and recoverable server-side."""
+    await _require_task(task_id)
+    await task_manager.archive_task(task_id)
+    return {"ok": True}
+
+
 @router.get("/tasks/{task_id}/messages")
 async def get_task_messages(task_id: str, user: str = Depends(require_devstudio_access)):
     await _require_task(task_id)
@@ -377,12 +415,20 @@ async def get_task_messages(task_id: str, user: str = Depends(require_devstudio_
 async def post_task_message(task_id: str, body: TaskMessageRequest, background_tasks: BackgroundTasks,
                               user: str = Depends(require_devstudio_write)):
     task = await _require_task(task_id)
+    # First real message on a blank "New Chat" (created with no request_text) is the effective
+    # kickoff: backfill request_text (every downstream prompt reads it, not the message log) and
+    # auto-title from it if the title is still the placeholder — ChatGPT/Claude-style naming.
+    if not task.request_text.strip() and body.text.strip():
+        update_fields = {"request_text": body.text}
+        if task.title == task_manager.DEFAULT_CHAT_TITLE:
+            update_fields["title"] = task_manager.generate_title_from_text(body.text)
+        task = await task_manager.update_task(task_id, **update_fields)
     await task_manager.add_message_from_request(task_id, body)
     # A follow-up message on a resting task resumes orchestration automatically (per spec: natural
     # follow-ups like "Continue." / "Fix it." should just work without a separate Run click).
     if task.status not in ("IMPLEMENTING", "TESTING", "ANALYZING_REPOSITORY", "PLANNING"):
         background_tasks.add_task(orchestrator.run_task, task_id)
-    return {"ok": True}
+    return {"ok": True, "task": task.model_dump()}
 
 
 @router.post("/tasks/{task_id}/run")
@@ -619,3 +665,31 @@ async def upload_file(task_id: str, file: UploadFile, user: str = Depends(requir
 async def list_uploads(task_id: str, user: str = Depends(require_devstudio_access)):
     await _require_task(task_id)
     return {"uploads": [u.model_dump() for u in await upload_service.list_uploads(task_id)]}
+
+
+@router.get("/uploads/{upload_id}/download")
+async def download_upload(upload_id: str, user: str = Depends(require_devstudio_access)):
+    up = await upload_service.get_upload(upload_id)
+    if not up:
+        raise HTTPException(404, "Upload not found")
+    data = await upload_service.read_upload_bytes(up)
+    return Response(content=data, media_type=up.content_type,
+                     headers={"Content-Disposition": f'inline; filename="{up.filename}"'})
+
+
+class VisionAttachBody(BaseModel):
+    attach: bool
+
+
+@router.put("/uploads/{upload_id}/vision")
+async def set_upload_vision(upload_id: str, body: VisionAttachBody,
+                             user: str = Depends(require_devstudio_write)):
+    """Flag/unflag an image upload for delivery to a vision-capable agent (e.g. Design), on
+    request only — never auto-injected into every context."""
+    try:
+        up = await upload_service.set_vision_attachment(upload_id, body.attach)
+    except upload_service.UploadRejected as e:
+        raise HTTPException(400, str(e))
+    if up is None:
+        raise HTTPException(404, "Upload not found")
+    return up.model_dump()

@@ -133,7 +133,7 @@ export function MemoryPanel({ projectId }: { projectId: string }) {
       <div className="flex-1 overflow-y-auto">
         <div className="p-6 max-w-3xl mx-auto space-y-2.5">
           {items.map((m) => (
-            <div key={m.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-3 hover:border-white/15 transition-colors">
+            <div key={m.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-3 hover:border-white/15 hover:-translate-y-0.5 hover:shadow-soft transition-all duration-150">
               <div className="flex items-center gap-2 mb-1.5">
                 <Badge tone="brand">{m.category}</Badge>
                 {m.stale && <Badge tone="warning" dot>stale</Badge>}
@@ -188,6 +188,9 @@ export function AgentsPanel() {
   const [providers, setProviders] = useState<string[]>([]);
   const [savingRole, setSavingRole] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [bulkProvider, setBulkProvider] = useState("");
+  const [bulkModel, setBulkModel] = useState("");
+  const [bulkApplying, setBulkApplying] = useState<"primary" | "fallback" | null>(null);
 
   async function load() {
     const [{ data: agentData }, { data: modelData }] = await Promise.all([
@@ -208,6 +211,28 @@ export function AgentsPanel() {
     setAgents(data.agents);
     setDrafts(Object.fromEntries(Object.entries(data.agents).map(([r, c]) => [r, { ...(c as AgentDraft) }])));
     toast.success(`Applied ${preset} preset to all agents`);
+  }
+
+  async function applyBulkProvider(target: "primary" | "fallback") {
+    if (!bulkProvider || !bulkModel) return;
+    setBulkApplying(target);
+    try {
+      const roles = Object.keys(drafts);
+      await Promise.all(
+        roles.map((role) =>
+          devstudio.updateAgentConfig(role, {
+            [`${target}_provider`]: bulkProvider,
+            [`${target}_model`]: bulkModel,
+          }),
+        ),
+      );
+      await load();
+      toast.success(`Set ${target} to ${PROVIDER_LABELS[bulkProvider] || bulkProvider} on every role`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not switch all roles");
+    } finally {
+      setBulkApplying(null);
+    }
   }
 
   function setField<K extends keyof AgentDraft>(role: string, field: K, value: AgentDraft[K]) {
@@ -255,7 +280,7 @@ export function AgentsPanel() {
 
   function modelOptions(provider: string) {
     const models = modelsByProvider[provider] || [];
-    if (!models.length) return [{ value: "", label: provider === "emergent" ? "(stub — no models yet)" : "(no models)" }];
+    if (!models.length) return [{ value: "", label: "(no models)" }];
     return models.map((m) => ({ value: m.id, label: m.label }));
   }
 
@@ -283,11 +308,58 @@ export function AgentsPanel() {
             Presets set every role at once. Expand a role to override it individually — including
             its fallback — without leaving the preset for everything else.
           </div>
-          {Object.entries(drafts).map(([role, cfg]) => {
+
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-2">
+            <div className="text-xs font-medium text-white/70">Switch every role at once</div>
+            <div className="grid grid-cols-2 gap-2">
+              <Select
+                value={bulkProvider}
+                placeholder="Provider…"
+                options={providerOptions}
+                onChange={(e) => {
+                  const provider = e.target.value;
+                  setBulkProvider(provider);
+                  setBulkModel((modelsByProvider[provider] || [])[0]?.id || "");
+                }}
+              />
+              <Select
+                value={bulkModel}
+                placeholder="Model…"
+                disabled={!bulkProvider}
+                options={bulkProvider ? modelOptions(bulkProvider) : [{ value: "", label: "—" }]}
+                onChange={(e) => setBulkModel(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm" variant="outline"
+                disabled={!bulkProvider || !bulkModel || bulkApplying !== null}
+                loading={bulkApplying === "primary"}
+                onClick={() => applyBulkProvider("primary")}
+              >
+                Set all primary
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                disabled={!bulkProvider || !bulkModel || bulkApplying !== null}
+                loading={bulkApplying === "fallback"}
+                onClick={() => applyBulkProvider("fallback")}
+              >
+                Set all fallback
+              </Button>
+              <span className="text-[11px] text-white/35 ml-1">Applies to all {Object.keys(drafts).length} roles</span>
+            </div>
+          </div>
+
+          {Object.entries(drafts).map(([role, cfg], i) => {
             const isOpen = expanded.has(role);
             const dirty = isDirty(role);
             return (
-              <div key={role} className="rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden transition-colors hover:border-white/15">
+              <div
+                key={role}
+                style={{ animationDelay: `${i * 25}ms` }}
+                className="rounded-lg border border-white/10 bg-white/[0.03] overflow-hidden transition-colors hover:border-white/15 animate-fade-up"
+              >
                 <button
                   onClick={() => toggleExpanded(role)}
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left"
@@ -299,7 +371,7 @@ export function AgentsPanel() {
                     {cfg.fallback_model && <span> → {cfg.fallback_provider}/{cfg.fallback_model}</span>}
                   </span>
                   <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
-                    {dirty && <Badge tone="warning" dot>unsaved</Badge>}
+                    {dirty && <Badge tone="warning" dot className="animate-scale-in">unsaved</Badge>}
                     {!cfg.enabled && <Badge tone="neutral">disabled</Badge>}
                   </div>
                 </button>
@@ -463,7 +535,7 @@ export function GitHubPanel() {
           )}
           <div className="space-y-1.5">
             {repos.map((r) => (
-              <div key={r.full_name} className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs flex items-center justify-between hover:border-white/15 transition-colors">
+              <div key={r.full_name} className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs flex items-center justify-between hover:border-white/15 hover:-translate-y-0.5 hover:shadow-soft transition-all duration-150">
                 <span className="text-white/80 flex items-center gap-2">
                   <Github className="w-3.5 h-3.5 text-white/35 flex-shrink-0" /> {r.full_name}
                 </span>

@@ -40,7 +40,10 @@ Credential paths (Settings > Secrets, or the equivalent env vars): native per-ve
 or the default AWS credential chain if no key pair is stored — see bedrock_provider.py), Google's
 Gemini Enterprise Agent Platform (a GCP project/location + optional service account JSON, or
 Application Default Credentials if none is stored — see gemini_enterprise_provider.py), and the
-Emergent Universal Key (intentional stub, see emergent_provider.py). None of the three presets
+Emergent Universal Key (one key for GPT/Claude/Gemini via Emergent's proxy — real implementation,
+see emergent_provider.py; its optional dependency lives in requirements-emergent.txt, not
+requirements-devstudio.txt, due to a pinned-openai-version conflict documented there). None of the
+three presets
 route through Bedrock, Gemini Enterprise, or Emergent by default; all three are available as an
 explicit per-role override (Settings > Agents > pick a role > choose provider) for deployments
 that need them, without changing what ships to everyone else.

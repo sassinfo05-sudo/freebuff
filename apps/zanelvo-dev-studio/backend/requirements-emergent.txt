@@ -1,0 +1,24 @@
+# Emergent Universal Key support (app/devstudio/providers/emergent_provider.py) — kept in a
+# SEPARATE file from requirements-devstudio.txt on purpose: every published version of
+# emergentintegrations hard-pins openai==1.99.9, which conflicts with the openai==1.109.1 pin
+# requirements-devstudio.txt uses for the native OpenAI provider. pip's resolver refuses to
+# install both pins in the same environment — this isn't a version we chose, it's the only
+# version emergentintegrations' own dependency metadata currently allows.
+#
+# Practical options:
+#   1. Only need Emergent, not the native OpenAI provider? Install this file instead of (not in
+#      addition to) requirements-devstudio.txt's openai line.
+#   2. Need both? Install requirements-devstudio.txt first, then this file — pip will downgrade
+#      openai to 1.99.9 to satisfy emergentintegrations. The native OpenAIProvider (Chat
+#      Completions API) has not been specifically re-verified against 1.99.9 in this repo; if you
+#      hit an OpenAI-provider issue after installing this file, that downgrade is the first thing
+#      to check.
+#   3. Cleanest for a production deployment that wants both without any shared-pin risk: run two
+#      separate virtualenvs/containers, or drop the native OpenAIProvider from your Agents config
+#      and rely on Emergent's own OpenAI-family models instead.
+#
+# emergentintegrations ships from Emergent's own CDN wheel index, not PyPI — the line below is a
+# real `pip install -r` directive, not just a comment, so `pip install -r requirements-emergent.txt`
+# alone installs everything correctly.
+--extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+emergentintegrations

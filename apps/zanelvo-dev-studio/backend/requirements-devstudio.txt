@@ -5,6 +5,12 @@
 #   pip install -r requirements-devstudio.txt
 #   python -m playwright install --with-deps chromium   # first time only, for browser QA
 #
+# Emergent Universal Key support (emergentintegrations) is intentionally NOT listed here — every
+# published version of it hard-pins openai==1.99.9, which conflicts with the openai==1.109.1 pin
+# below for the native OpenAI provider; pip's resolver refuses to install both in one environment.
+# Install it separately via requirements-emergent.txt (which pins its own compatible openai) if you
+# want Emergent — see that file's header for the tradeoff. Lazily imported either way, so nothing
+# here breaks if it's absent.
 anthropic==0.69.0
 openai==1.109.1
 # Also covers GeminiEnterpriseProvider (Vertex AI / Gemini Enterprise Agent Platform) — same SDK,

@@ -32,7 +32,9 @@ PLANNER_SYSTEM = (
     "produce an actionable implementation plan. Never use vague plan items. Return JSON: "
     "{\"items\": [{\"title\": str, \"description\": str, \"assigned_agent\": one of "
     "['design','frontend','backend','integration'], \"relevant_files\": [str], "
-    "\"acceptance_criteria\": [str], \"verification_method\": str, \"depends_on\": [int]}]}. "
+    "\"acceptance_criteria\": [str], \"verification_method\": str, \"depends_on\": [str]}]}. "
+    "depends_on MUST be the exact title string of another item in this same plan that must "
+    "complete first — never an index number or id. "
     "Every item MUST have concrete, testable acceptance_criteria and a verification_method "
     "(e.g. 'pytest backend/tests/test_x.py', 'manual: click X, expect Y')."
 )

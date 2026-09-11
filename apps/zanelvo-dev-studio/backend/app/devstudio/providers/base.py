@@ -45,9 +45,21 @@ class ProviderNotConfigured(Exception):
 
 
 class ProviderNotImplemented(Exception):
-    """Raised by an intentional stub provider (e.g. Emergent) that has a real interface but no
-    working backend yet. Distinct from ProviderNotConfigured: this is a missing integration, not
-    a missing credential."""
+    """Raised by an intentional stub provider that has a real interface but no working backend
+    yet. Distinct from ProviderNotConfigured: this is a missing integration, not a missing
+    credential. (No provider currently uses this — Emergent, the last stub, now has a real
+    implementation — but the class stays for the next one.)"""
+
+
+class ProviderError(Exception):
+    """Normalized provider/runtime failure. `code` is one of a small stable set
+    (MODEL_UNAVAILABLE, RATE_LIMIT, CONTEXT_TOO_LARGE, INVALID_REQUEST, PROVIDER_TIMEOUT,
+    INSUFFICIENT_CREDIT, PROVIDER_ERROR) so callers/UI can react uniformly regardless of vendor.
+    Messages are kept secret-safe — never echo the API/Universal key or raw upstream payloads."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class LLMProvider(ABC):

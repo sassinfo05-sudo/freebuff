@@ -114,6 +114,7 @@ class Task(BaseDocument):
     stop_requested: bool = False
     blocked_reason: Optional[str] = None
     created_by: Optional[str] = None    # staff user id
+    archived: bool = False               # soft-delete — see DELETE /tasks/{id}, list_tasks() filters it out
 
 
 class TaskMessage(BaseDocument):
@@ -313,6 +314,7 @@ class Upload(BaseDocument):
     size_bytes: int
     path: str
     is_image: bool = False
+    attach_to_vision: bool = False
 
 
 class ActivityEvent(BaseDocument):
@@ -358,10 +360,17 @@ class CreateProjectRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     project_id: str
     branch: str
-    title: str
-    request_text: str
+    # Both optional so a "New Chat" click can create a blank chat immediately, ChatGPT/Claude-style
+    # — no upfront form. request_text (and title, if left default) is backfilled from the first
+    # real message; see post_task_message in routes.py.
+    title: Optional[str] = None
+    request_text: str = ""
     mode: TaskMode = "feature"
     model_preset: ModelPreset = "BALANCED"
+
+
+class TaskUpdateRequest(BaseModel):
+    title: Optional[str] = None
 
 
 class TaskMessageRequest(BaseModel):

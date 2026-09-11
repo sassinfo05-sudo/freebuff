@@ -62,7 +62,7 @@ export function CheckpointsPanel({ taskId }: { taskId: string }) {
         </Button>
       </div>
       {checkpoints.map((c) => (
-        <div key={c.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs hover:border-white/15 transition-colors">
+        <div key={c.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 mb-2 text-xs hover:border-white/15 hover:-translate-y-0.5 hover:shadow-soft transition-all duration-150">
           <div className="flex items-center justify-between gap-2">
             <span className="text-white/85 font-medium truncate">{c.label}</span>
             <Button size="sm" variant="outline" onClick={() => setRestoreTarget({ id: c.id, label: c.label })}>

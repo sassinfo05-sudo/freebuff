@@ -20,10 +20,12 @@ export interface Task {
   id: string;
   project_id: string;
   title: string;
+  request_text: string;
   status: string;
   mode: string;
   branch: string;
   blocked_reason?: string | null;
+  archived?: boolean;
   created_at?: string;
 }
 

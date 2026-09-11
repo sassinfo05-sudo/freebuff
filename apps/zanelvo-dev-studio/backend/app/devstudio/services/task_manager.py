@@ -11,16 +11,34 @@ from .. import state_machine
 from ..models import (CreateTaskRequest, PlanItem, Task, TaskMessage, TaskMessageRequest, TaskStatus)
 from . import activity_service, anti_loop
 
+DEFAULT_CHAT_TITLE = "New chat"
+
+
+def generate_title_from_text(text: str) -> str:
+    """Heuristic chat title from a first message — first line, truncated at a word boundary.
+    No LLM call: fast, free, and the user can always rename it (PATCH /tasks/{id})."""
+    first_line = text.strip().splitlines()[0] if text.strip() else ""
+    if not first_line:
+        return DEFAULT_CHAT_TITLE
+    limit = 60
+    if len(first_line) <= limit:
+        return first_line
+    truncated = first_line[:limit].rsplit(" ", 1)[0] or first_line[:limit]
+    return truncated.rstrip(",.;:") + "…"
+
 
 async def create_task(req: CreateTaskRequest, created_by: Optional[str]) -> Task:
     budget = anti_loop.budget_for_preset("BALANCED")
-    task = Task(project_id=req.project_id, title=req.title, request_text=req.request_text,
+    title = req.title or (generate_title_from_text(req.request_text) if req.request_text.strip()
+                           else DEFAULT_CHAT_TITLE)
+    task = Task(project_id=req.project_id, title=title, request_text=req.request_text,
                 mode=req.mode, branch=req.branch, model_preset=req.model_preset,
                 iteration_budget=budget, created_by=created_by)
     res = await get_db().ds_tasks.insert_one(task.to_mongo())
     task.id = str(res.inserted_id)
     await activity_service.emit(task.id, "task_created", {"title": task.title, "mode": task.mode})
-    await add_message(task.id, "user", req.request_text)
+    if req.request_text.strip():
+        await add_message(task.id, "user", req.request_text)
     return task
 
 
@@ -30,9 +48,16 @@ async def get_task(task_id: str) -> Optional[Task]:
 
 
 async def list_tasks(project_id: Optional[str] = None) -> List[Task]:
-    q = {"project_id": project_id} if project_id else {}
+    q: dict = {"archived": {"$ne": True}}
+    if project_id:
+        q["project_id"] = project_id
     docs = get_db().ds_tasks.find(q).sort("created_at", -1)
     return [Task.from_mongo(d) async for d in docs]
+
+
+async def archive_task(task_id: str) -> None:
+    await get_db().ds_tasks.update_one({"_id": ObjectId(task_id)},
+                                         {"$set": {"archived": True, "updated_at": utc_now_iso()}})
 
 
 async def set_status(task_id: str, target: TaskStatus, note: Optional[str] = None) -> Task:
@@ -96,12 +121,17 @@ async def set_plan(task_id: str, items: List[dict]) -> List[PlanItem]:
     await db.ds_plan_items.delete_many({"task_id": task_id})
     out: List[PlanItem] = []
     for i, item in enumerate(items):
+        # The planner LLM is asked for title strings, but models occasionally emit positional
+        # indices/ids instead despite the prompt — coerce to str rather than crash the run; an
+        # unmatched value just fails the id/title lookup in orchestrator._implement_loop, which
+        # already treats that as "not a real dependency" rather than erroring.
+        depends_on = [str(d) for d in item.get("depends_on", []) if d is not None]
         pi = PlanItem(task_id=task_id, order=i, title=item["title"], description=item["description"],
                        assigned_agent=item.get("assigned_agent", "backend"),
                        relevant_files=item.get("relevant_files", []),
                        acceptance_criteria=item.get("acceptance_criteria", []),
                        verification_method=item.get("verification_method", ""),
-                       depends_on=item.get("depends_on", []))
+                       depends_on=depends_on)
         res = await db.ds_plan_items.insert_one(pi.to_mongo())
         pi.id = str(res.inserted_id)
         out.append(pi)
