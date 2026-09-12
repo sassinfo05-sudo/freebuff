@@ -301,6 +301,20 @@ class EmergentUniversalKeyProvider(LLMProvider):
                                    prompt: Optional[str] = None, history: Optional[Any] = None,
                                    tool_results: Optional[List[Dict[str, Any]]] = None,
                                    max_tokens: int = 4096) -> LLMResult:
+        # Verified this session against the REAL emergentintegrations SDK (installed from
+        # Emergent's own CDN index — see requirements-emergent.txt), not just read against its
+        # docstrings: LlmChat/UserMessage/ToolCall/Usage's actual constructor signatures and
+        # attribute names, and — critically — that add_tool_result()'s pending-call bookkeeping
+        # (populated internally by a REAL send_message_with_tools() response, not a shallow mock
+        # of that method) accepts the id this provider passes back on the following turn. Also
+        # verified end to end through runner.call_with_tools() with a role's tools_enabled default
+        # (e.g. the Planner's ask_human), including ask_human's real BLOCKED-transition side
+        # effect. Only the network boundary (litellm.acompletion) was mocked — no funded Universal
+        # Key was available in this environment. `emergentintegrations` cannot be installed
+        # alongside requirements-devstudio.txt's openai==1.109.1 pin (see requirements-emergent.txt
+        # for why), so this verification was done in a separate venv and isn't part of the default
+        # pytest run — see the commit that added this note for the exact repro commands.
+        #
         # `history`, when set, IS the same stateful LlmChat instance from the previous turn (the
         # SDK's own with_tools()/add_tool_result()/send_message_with_tools() already track
         # conversation state internally) — round-tripping the object itself is simpler and more
