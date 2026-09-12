@@ -668,8 +668,11 @@ async def run_browser(task_id: str, body: BrowserRunBody, user: str = Depends(re
 
 class PreviewLiveLocalBody(BaseModel):
     subdir: str = "frontend"  # relative to the workspace root; not a raw shell command — the
-                                # dev-server command itself is fixed ("npm start") to avoid turning
-                                # this into an arbitrary shell-command execution endpoint.
+                                # actual dev-server command is derived from this directory's own
+                                # package.json ("dev" for Vite, "start" for CRA/webpack-dev-server —
+                                # see preview_service._resolve_dev_command), never accepted from the
+                                # caller, so this can never become an arbitrary shell-command
+                                # execution endpoint.
 
 
 @router.post("/tasks/{task_id}/preview/live-local")

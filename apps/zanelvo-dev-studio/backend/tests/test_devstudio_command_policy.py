@@ -8,6 +8,16 @@ def test_allows_known_safe_commands():
         assert cp.is_allowed(cmd), f"expected allowed: {cmd}"
 
 
+def test_allows_jvm_build_and_archive_commands():
+    # Java/Kotlin build tools (e.g. building a Bukkit/Spigot/Paper Minecraft plugin .jar) and the
+    # archiving tools founders use to package a build's output.
+    for cmd in ["mvn -B package", "mvn clean install", "./mvnw -B package", "gradle build",
+                "gradle shadowJar", "./gradlew build", "javac -d out src/Main.java",
+                "java -jar build/libs/plugin.jar", "jar cf plugin.jar -C build .",
+                "zip -r release.zip dist", "unzip -o plugin.jar -d extracted", "tar -czf out.tar.gz dist"]:
+        assert cp.is_allowed(cmd), f"expected allowed: {cmd}"
+
+
 def test_denies_commands_not_on_the_allowlist():
     for cmd in ["curl http://example.com", "node server.js", "cat /etc/hosts", "ls -la"]:
         assert not cp.is_allowed(cmd), f"expected denied (not allow-listed): {cmd}"

@@ -24,6 +24,10 @@ ALLOWED_PREFIXES: List[List[str]] = [
     ["pip", "install"], ["pip3", "install"],
     ["npx", "playwright"], ["npx", "tsc"],
     ["git", "status"], ["git", "diff"], ["git", "log"],
+    # --- JVM builds (Java/Kotlin projects — e.g. Bukkit/Spigot/Paper Minecraft plugins) ---
+    ["mvn"], ["./mvnw"], ["gradle"], ["./gradlew"], ["javac"], ["java"], ["jar"],
+    # --- archiving (build artifacts, general packaging) ---
+    ["zip"], ["unzip"], ["tar"],
 ]
 
 # Substring / regex patterns that are ALWAYS refused, no matter what else matches. Matched against

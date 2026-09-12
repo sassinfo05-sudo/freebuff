@@ -20,6 +20,7 @@ _ROUTE_HINTS = {
     "payment": ["stripe", "payment", "billing", "webhook", "checkout", "invoice"],
     "frontend": ["frontend/src", ".jsx", ".tsx", "frontend/"],
     "backend": ["backend/app", ".py"],
+    "java": ["pom.xml", "build.gradle", ".java", ".kt", "src/main/java"],
 }
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
@@ -37,6 +38,10 @@ class TestingProfile:
     backend_test_cmd: Optional[str] = None
     backend_lint_cmd: Optional[str] = None
     playwright_config: bool = False
+    has_java: bool = False
+    java_dir: Optional[str] = None
+    java_build_cmd: Optional[str] = None   # produces the .jar (Maven "package" / Gradle "build")
+    java_test_cmd: Optional[str] = None
 
     def to_dict(self) -> dict:
         return self.__dict__
@@ -100,6 +105,26 @@ def discover(workspace_path: str) -> TestingProfile:
         if os.path.isfile(os.path.join(backend_dir, "ruff.toml")):
             profile.backend_lint_cmd = "python -m ruff check ."
 
+    # Maven (pom.xml) or Gradle (build.gradle[.kts]) — the two build systems virtually every JVM
+    # project (including Bukkit/Spigot/Paper Minecraft plugins) uses. Prefers the project's own
+    # wrapper script (./mvnw, ./gradlew) when present — it pins an exact, known-working build-tool
+    # version, so it's more reliable than whatever "mvn"/"gradle" happens to be on PATH.
+    java_dirs = _find_candidate_dirs(
+        workspace_path, ["pom.xml", "build.gradle", "build.gradle.kts"], ["", "plugin"])
+    if java_dirs:
+        java_dir = java_dirs[0]
+        jdir = os.path.join(workspace_path, java_dir)
+        profile.has_java = True
+        profile.java_dir = java_dir
+        if os.path.isfile(os.path.join(jdir, "pom.xml")):
+            mvn = "./mvnw" if os.path.isfile(os.path.join(jdir, "mvnw")) else "mvn"
+            profile.java_build_cmd = f"{mvn} -B package"
+            profile.java_test_cmd = f"{mvn} -B test"
+        else:
+            gradle = "./gradlew" if os.path.isfile(os.path.join(jdir, "gradlew")) else "gradle"
+            profile.java_build_cmd = f"{gradle} build"
+            profile.java_test_cmd = f"{gradle} test"
+
     for cfg_dir in dict.fromkeys(["", "frontend", *fe_dirs]):  # dict.fromkeys = de-dup, keep order
         for cfg_name in ("playwright.config.ts", "playwright.config.js"):
             if os.path.isfile(os.path.join(workspace_path, cfg_dir, cfg_name)):
@@ -128,8 +153,13 @@ def select_commands(profile: TestingProfile, changed_files: List[str]) -> List[D
     commands: List[Dict[str, Optional[str]]] = []
     touches_frontend = "frontend" in subsystems or not changed_files
     touches_backend = "backend" in subsystems or not changed_files
+    touches_java = "java" in subsystems or not changed_files
     large_refactor = len(changed_files) > 25
 
+    if (touches_java or large_refactor) and profile.java_test_cmd:
+        commands.append({"type": "java_unit", "command": profile.java_test_cmd, "cwd": profile.java_dir})
+    if (touches_java or large_refactor) and profile.java_build_cmd:
+        commands.append({"type": "build", "command": profile.java_build_cmd, "cwd": profile.java_dir})
     if (touches_backend or large_refactor) and profile.backend_test_cmd:
         commands.append({"type": "backend_unit", "command": profile.backend_test_cmd, "cwd": profile.backend_dir})
     if (touches_backend or large_refactor) and profile.backend_lint_cmd:

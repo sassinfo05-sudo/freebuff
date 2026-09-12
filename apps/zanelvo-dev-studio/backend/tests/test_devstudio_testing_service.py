@@ -66,6 +66,46 @@ def test_every_selected_command_passes_command_policy(tmp_path):
         assert decision.allowed, f"{c['command']!r} should be allowed: {decision.reason}"
 
 
+def test_maven_project_is_discovered_and_uses_the_wrapper_when_present(tmp_path):
+    _write(tmp_path / "plugin" / "pom.xml", "<project></project>")
+    _write(tmp_path / "plugin" / "mvnw", "#!/bin/sh\n")
+
+    profile = testing_service.discover(str(tmp_path))
+    assert profile.has_java and profile.java_dir == "plugin"
+    assert profile.java_build_cmd == "./mvnw -B package"
+    assert profile.java_test_cmd == "./mvnw -B test"
+
+
+def test_maven_project_without_a_wrapper_falls_back_to_system_mvn(tmp_path):
+    _write(tmp_path / "pom.xml", "<project></project>")
+
+    profile = testing_service.discover(str(tmp_path))
+    assert profile.has_java and profile.java_dir == ""
+    assert profile.java_build_cmd == "mvn -B package"
+
+
+def test_gradle_project_is_discovered_and_uses_the_wrapper_when_present(tmp_path):
+    _write(tmp_path / "build.gradle.kts", "")
+    _write(tmp_path / "gradlew", "#!/bin/sh\n")
+
+    profile = testing_service.discover(str(tmp_path))
+    assert profile.has_java
+    assert profile.java_build_cmd == "./gradlew build"
+    assert profile.java_test_cmd == "./gradlew test"
+
+
+def test_java_build_and_test_commands_are_selected_and_pass_command_policy(tmp_path):
+    _write(tmp_path / "pom.xml", "<project></project>")
+
+    profile = testing_service.discover(str(tmp_path))
+    commands = testing_service.select_commands(profile, changed_files=[])
+    types = {c["type"] for c in commands}
+    assert {"java_unit", "build"}.issubset(types)
+    for c in commands:
+        decision = command_policy.evaluate(c["command"])
+        assert decision.allowed, f"{c['command']!r} should be allowed: {decision.reason}"
+
+
 def test_cwd_is_reported_separately_from_command(tmp_path):
     _write(tmp_path / "apps" / "myapp" / "backend" / "requirements.txt")
 
