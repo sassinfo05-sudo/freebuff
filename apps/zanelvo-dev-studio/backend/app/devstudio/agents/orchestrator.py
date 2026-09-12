@@ -9,10 +9,11 @@ explicitly via the commit/push API once a task reaches READY_FOR_APPROVAL.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Dict, List, Optional
 
-from ..models import AgentConfiguration, Project, Task, Workspace
+from ..models import AgentConfiguration, PlanItem, Project, Task, Workspace
 from ..providers.registry import ModelRegistry
 from ..services import (activity_service, anti_loop, execution_service, indexer, memory_service,
                           repository_service, settings_service, task_manager, workspace_manager)
@@ -197,79 +198,138 @@ async def _finalize_verification(task_id: str) -> None:
         await task_manager.update_task(task_id, verification_status="limited")
 
 
-async def _implement_loop(task: Task, project: Project, workspace: Workspace, registry: ModelRegistry,
-                           configs: Dict[str, AgentConfiguration], loop_detector: anti_loop.LoopDetector) -> bool:
-    """Implements plan items in dependency order. Returns True if the loop reached a stopping
-    point cleanly (all runnable items attempted); False if it already transitioned the task to a
-    state the caller should not continue from (BLOCKED, or returned for the founder to retry)."""
-    fs = FileService(workspace.local_path)
-    items = await task_manager.list_plan_items(task.id)
+_MAX_PARALLEL_IMPLEMENTERS = 3  # bounds concurrent LLM calls within one implement pass
+
+
+def _select_runnable_items(items: List[PlanItem]) -> List[PlanItem]:
+    """Pure: which of `items` are eligible to attempt right now — not already done, and every
+    dependency already satisfied. Dependency readiness is evaluated against the snapshot in
+    `items` only (a dependency finishing mid-pass doesn't unlock others until the next pass) —
+    this matches the original single-pass orchestrator behavior exactly."""
     by_title = {i.title: i for i in items}
     id_index = {i.id: i for i in items}
-
+    runnable = []
     for item in items:
-        if await task_manager.is_stop_requested(task.id):
-            await _cancel(task.id)
-            return False
         if item.status in ("VERIFIED", "SKIPPED", "IMPLEMENTED", "VERIFYING"):
             continue
         deps = [id_index.get(d) or by_title.get(d) for d in item.depends_on]
         if any(d and d.status not in ("VERIFIED", "IMPLEMENTED", "SKIPPED") for d in deps):
             continue  # dependency not ready yet; leave PENDING
+        runnable.append(item)
+    return runnable
 
+
+async def _escalate_strategy(task_id: str, item: PlanItem, configs: Dict[str, AgentConfiguration]) -> None:
+    """Called when anti_loop flags the SAME failure repeating on `item` (LoopSignal.
+    should_change_strategy) — hands the item to the Troubleshoot specialist for its next attempt
+    instead of blindly retrying the same role a third time. This is what actually triggers the
+    behavior the seeded Troubleshoot role's own system prompt already promises ('invoked when the
+    same plan item has failed more than once') — nothing used to call it. A no-op if the item is
+    already assigned to Troubleshoot (a further repeat there heads to should_block instead) or no
+    enabled Troubleshoot configuration exists."""
+    if item.assigned_agent == "troubleshoot":
+        return
+    troubleshoot_cfg = configs.get("troubleshoot")
+    if not troubleshoot_cfg or not troubleshoot_cfg.enabled:
+        return
+    await task_manager.reassign_plan_item(item.id, "troubleshoot", f"Repeated failure on '{item.title}'")
+    await task_manager.add_message(
+        task_id, "supervisor",
+        f"{item.title}: same failure repeated — reassigning to the Troubleshoot Agent for a fresh approach.")
+
+
+async def _implement_loop(task: Task, project: Project, workspace: Workspace, registry: ModelRegistry,
+                           configs: Dict[str, AgentConfiguration], loop_detector: anti_loop.LoopDetector) -> bool:
+    """Implements every plan item that's runnable this pass (dependencies already satisfied),
+    running their LLM calls CONCURRENTLY in bounded batches — the file operations each call
+    proposes are only applied afterward, sequentially, so no filesystem write ever races another.
+    An item whose proposed patch turns out to be stale against another item's write in the same
+    batch (only possible if the Planner declared them independent but they actually touch the same
+    file) fails cleanly via the existing StalePatchError path and is retried next pass, once it can
+    see the other item's change — it never corrupts anything. Returns True if the pass reached a
+    stopping point cleanly; False if it already transitioned the task to a state the caller should
+    not continue from (BLOCKED, or returned for the founder to retry)."""
+    fs = FileService(workspace.local_path)
+    items = await task_manager.list_plan_items(task.id)
+    runnable = _select_runnable_items(items)
+
+    for batch_start in range(0, len(runnable), _MAX_PARALLEL_IMPLEMENTERS):
+        batch = runnable[batch_start:batch_start + _MAX_PARALLEL_IMPLEMENTERS]
+
+        if await task_manager.is_stop_requested(task.id):
+            await _cancel(task.id)
+            return False
         task = await task_manager.get_task(task.id)
         if anti_loop.budget_exhausted(task.iterations_used, task.iteration_budget):
             await _block(task.id, f"Orchestration budget exhausted ({task.iteration_budget} iterations)")
             return False
 
-        await task_manager.set_plan_item_status(item.id, "READY")
-        await task_manager.set_plan_item_status(item.id, "RUNNING")
-        config = configs.get(item.assigned_agent, configs["backend"])
+        prepared = []
+        for item in batch:
+            await task_manager.set_plan_item_status(item.id, "READY")
+            await task_manager.set_plan_item_status(item.id, "RUNNING")
+            config = configs.get(item.assigned_agent, configs["backend"])
+            file_contents: Dict[str, str] = {}
+            expected_hashes: Dict[str, Optional[str]] = {}
+            for path in item.relevant_files[:12]:
+                try:
+                    file_contents[path] = fs.read_file(path)
+                    expected_hashes[path] = fs.read_hash(path)
+                except (FileNotFoundError, PathEscapeError, ValueError):
+                    continue
+            prepared.append((item, config, file_contents, expected_hashes))
 
-        file_contents: Dict[str, str] = {}
-        expected_hashes: Dict[str, Optional[str]] = {}
-        for path in item.relevant_files[:12]:
+        # No filesystem writes happen until every call in this batch returns, so running the LLM
+        # calls concurrently is safe regardless of whether items touch overlapping files — only
+        # applying their results (below) needs to stay sequential.
+        results = await asyncio.gather(
+            *(roles.implement_plan_item(task, item, project.id, task.branch, file_contents, registry, config)
+              for item, config, file_contents, expected_hashes in prepared),
+            return_exceptions=True,
+        )
+
+        for (item, config, file_contents, expected_hashes), plan_result in zip(prepared, results):
+            if isinstance(plan_result, AgentStepFailed):
+                await task_manager.set_plan_item_status(item.id, "FAILED")
+                signal = await anti_loop.record_failure(task.id, str(plan_result), command="implement",
+                                                          subsystem=item.assigned_agent, plan_item_id=item.id)
+                await task_manager.add_message(task.id, "supervisor",
+                                                 f"{item.title}: implementation failed — {plan_result}")
+                if signal.should_block:
+                    await _block(task.id, f"Repeated implementation failure on '{item.title}': {plan_result}")
+                    return False
+                if signal.should_change_strategy:
+                    await _escalate_strategy(task.id, item, configs)
+                continue
+            if isinstance(plan_result, BaseException):
+                raise plan_result  # unexpected — surfaced by run_task's own catch-all as BLOCKED
+
+            ops = plan_result.get("file_operations", []) if isinstance(plan_result, dict) else []
+            diff_before = await git_agent.diff_against_base(workspace)
             try:
-                file_contents[path] = fs.read_file(path)
-                expected_hashes[path] = fs.read_hash(path)
-            except (FileNotFoundError, PathEscapeError, ValueError):
+                _apply_file_operations(fs, ops, expected_hashes)
+            except (StalePatchError, PathEscapeError, ValueError, FileNotFoundError, FileExistsError) as e:
+                await task_manager.set_plan_item_status(item.id, "FAILED")
+                signal = await anti_loop.record_failure(task.id, str(e), command="apply_patch",
+                                                          subsystem=item.assigned_agent, plan_item_id=item.id)
+                await task_manager.add_message(task.id, "supervisor", f"{item.title}: could not apply changes — {e}")
+                if signal.should_block:
+                    await _block(task.id, f"Repeated patch failure on '{item.title}': {e}")
+                    return False
+                if signal.should_change_strategy:
+                    await _escalate_strategy(task.id, item, configs)
                 continue
 
-        try:
-            plan_result = await roles.implement_plan_item(task, item, project.id, task.branch,
-                                                             file_contents, registry, config)
-        except AgentStepFailed as e:
-            await task_manager.set_plan_item_status(item.id, "FAILED")
-            signal = await anti_loop.record_failure(task.id, str(e), command="implement", subsystem=item.assigned_agent)
-            await task_manager.add_message(task.id, "supervisor", f"{item.title}: implementation failed — {e}")
-            if signal.should_block:
-                await _block(task.id, f"Repeated implementation failure on '{item.title}': {e}")
-                return False
-            continue
+            diff_after = await git_agent.diff_against_base(workspace)
+            no_progress = loop_detector.record_diff(str(diff_after))
+            if no_progress and diff_before == diff_after:
+                await task_manager.add_message(task.id, "supervisor",
+                                                 f"{item.title}: no diff change after implementation attempt")
 
-        ops = plan_result.get("file_operations", []) if isinstance(plan_result, dict) else []
-        diff_before = await git_agent.diff_against_base(workspace)
-        try:
-            _apply_file_operations(fs, ops, expected_hashes)
-        except (StalePatchError, PathEscapeError, ValueError, FileNotFoundError, FileExistsError) as e:
-            await task_manager.set_plan_item_status(item.id, "FAILED")
-            signal = await anti_loop.record_failure(task.id, str(e), command="apply_patch", subsystem=item.assigned_agent)
-            await task_manager.add_message(task.id, "supervisor", f"{item.title}: could not apply changes — {e}")
-            if signal.should_block:
-                await _block(task.id, f"Repeated patch failure on '{item.title}': {e}")
-                return False
-            continue
-
-        diff_after = await git_agent.diff_against_base(workspace)
-        no_progress = loop_detector.record_diff(str(diff_after))
-        if no_progress and diff_before == diff_after:
-            await task_manager.add_message(task.id, "supervisor",
-                                             f"{item.title}: no diff change after implementation attempt")
-
-        await task_manager.set_plan_item_status(item.id, "IMPLEMENTED",
-                                                   evidence={"kind": "file_operations", "count": len(ops)})
-        await task_manager.update_task(task.id, iterations_used=task.iterations_used + 1,
-                                         current_diff_summary=diff_after)
+            await task_manager.set_plan_item_status(item.id, "IMPLEMENTED",
+                                                       evidence={"kind": "file_operations", "count": len(ops)})
+            task = await task_manager.update_task(task.id, iterations_used=task.iterations_used + 1,
+                                                     current_diff_summary=diff_after)
 
     return True
 

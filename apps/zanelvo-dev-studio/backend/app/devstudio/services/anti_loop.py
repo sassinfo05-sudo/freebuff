@@ -118,18 +118,29 @@ async def record_failure(task_id: str, raw_output: str, command: Optional[str] =
 
     if occurrences >= MAX_SAME_STRATEGY_ATTEMPTS + 1:
         return LoopSignal(True, True, "Same failure fingerprint repeated 3+ times — mark BLOCKED", occurrences)
-    if occurrences > MAX_SAME_STRATEGY_ATTEMPTS:
+    # BUG FIX: this used to be `occurrences > MAX_SAME_STRATEGY_ATTEMPTS` (i.e. > 2), which for
+    # integer occurrence counts is identical to the block branch's `>= 3` above — the block check
+    # always caught occurrences==3 first, so should_change_strategy could never fire on its own.
+    # `>= MAX_SAME_STRATEGY_ATTEMPTS` (>= 2) actually reaches this branch at the 2nd occurrence,
+    # one attempt before blocking — which is the whole point of a "change strategy" signal that's
+    # distinct from "give up". This is what orchestrator._escalate_strategy now acts on to hand a
+    # repeatedly-failing plan item to the Troubleshoot specialist before giving up on it entirely.
+    if occurrences >= MAX_SAME_STRATEGY_ATTEMPTS:
         return LoopSignal(True, False, "Same failure repeated — switch strategy/specialist/model", occurrences)
     return LoopSignal(False, False, "First occurrence of this failure", occurrences)
 
 
-async def failure_history(task_id: str, limit: int = 20) -> List[dict]:
-    docs = get_db().ds_failure_records.find({"task_id": task_id}).sort("last_seen_at", -1).limit(limit)
+async def failure_history(task_id: str, limit: int = 20,
+                           plan_item_id: Optional[str] = None) -> List[dict]:
+    query: dict = {"task_id": task_id}
+    if plan_item_id:
+        query["plan_item_id"] = plan_item_id
+    docs = get_db().ds_failure_records.find(query).sort("last_seen_at", -1).limit(limit)
     out = []
     async for d in docs:
         out.append({k: d.get(k) for k in
-                     ("fingerprint", "command", "failure_class", "normalized_error",
-                       "subsystem", "occurrences", "first_seen_at", "last_seen_at")})
+                     ("fingerprint", "command", "failure_class", "normalized_error", "subsystem",
+                       "plan_item_id", "occurrences", "first_seen_at", "last_seen_at")})
     return out
 
 

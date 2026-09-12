@@ -64,14 +64,15 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
       try {
         const data = JSON.parse(e.data);
         setEvents((prev) => [...prev, { ...data, kind: e.type }]);
-        if (["state_change", "plan_created", "plan_item_status", "agent_finished"].includes(e.type)) refreshAll();
+        if (["state_change", "plan_created", "plan_item_status", "agent_finished", "plan_item_reassigned"]
+          .includes(e.type)) refreshAll();
       } catch {
         /* ignore malformed event */
       }
     };
     const kinds = [
       "task_created", "state_change", "message", "agent_started", "agent_finished", "plan_created",
-      "plan_item_status", "supervisor_note", "stop_requested",
+      "plan_item_status", "supervisor_note", "stop_requested", "tool_call", "plan_item_reassigned",
     ];
     kinds.forEach((k) => es.addEventListener(k, onAny as EventListener));
     // The browser's EventSource reconnects on its own after a drop (network blip, backend
@@ -428,6 +429,28 @@ function ActivityRow({ event }: { event: any }) {
       <div className="text-[11px] text-white/40 flex items-center gap-2 animate-fade-up">
         <ListTodo className="w-3.5 h-3.5 flex-shrink-0" />
         Plan item "{event.payload.title}": {event.payload.from} → {event.payload.to}
+      </div>
+    );
+  }
+  if (kind === "tool_call") {
+    return (
+      <div className="text-[11px] text-white/40 flex items-center gap-2 animate-fade-up">
+        <Wrench className="w-3.5 h-3.5 flex-shrink-0" />
+        <span className="capitalize">{(event.payload.role || "").replace(/_/g, " ")}</span> called
+        <span className="font-mono text-white/60">{event.payload.tool}</span>
+        {event.payload.server && <span className="text-white/30">via MCP server "{event.payload.server}"</span>}
+      </div>
+    );
+  }
+  if (kind === "plan_item_reassigned") {
+    return (
+      <div className="text-[11px] text-amber-300/70 flex items-center gap-2 animate-fade-up">
+        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+        "{event.payload.title}" reassigned: {(event.payload.from_agent || "").replace(/_/g, " ")} →{" "}
+        <strong className="text-amber-200/90 font-medium">
+          {(event.payload.to_agent || "").replace(/_/g, " ")}
+        </strong>{" "}
+        — {event.payload.reason}
       </div>
     );
   }

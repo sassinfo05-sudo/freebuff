@@ -164,6 +164,26 @@ async def set_plan_item_status(plan_item_id: str, target: str, evidence: Optiona
     return current
 
 
+async def reassign_plan_item(plan_item_id: str, new_agent: str, reason: str) -> PlanItem:
+    """Hands a plan item to a different role for its next attempt — used by the anti-loop escalation
+    path (see orchestrator._escalate_strategy) to route a repeatedly-failing item to a specialist
+    (e.g. troubleshoot) instead of retrying the same role/strategy a third time."""
+    doc = await get_db().ds_plan_items.find_one({"_id": ObjectId(plan_item_id)})
+    if not doc:
+        raise ValueError("Plan item not found")
+    current = PlanItem.from_mongo(doc)
+    await get_db().ds_plan_items.update_one(
+        {"_id": ObjectId(plan_item_id)},
+        {"$set": {"assigned_agent": new_agent, "updated_at": utc_now_iso()}},
+    )
+    await activity_service.emit(current.task_id, "plan_item_reassigned",
+                                  {"plan_item_id": plan_item_id, "title": current.title,
+                                    "from_agent": current.assigned_agent, "to_agent": new_agent,
+                                    "reason": reason})
+    current.assigned_agent = new_agent
+    return current
+
+
 async def all_required_items_verified(task_id: str) -> bool:
     items = await list_plan_items(task_id)
     if not items:

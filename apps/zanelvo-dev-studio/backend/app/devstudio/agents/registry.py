@@ -12,6 +12,18 @@ from ..services import custom_agent_service
 
 ROLES: List[AgentRole] = list(BUILTIN_AGENT_ROLES)
 
+# Default tools_enabled per role. Deliberately conservative: only roles whose primary provider is
+# Anthropic across EVERY preset (see providers/registry.py MODEL_PRESETS) get tools by default,
+# because only Anthropic/Emergent implement generate_with_tools() today — giving a Gemini-primary
+# role (design) or OpenAI-primary role (reviewer) default tools would silently make every one of
+# their calls fail over to the Anthropic fallback model first, a real cost/latency regression, not
+# a capability upgrade. Founders can still opt those roles in manually in Settings > Agents.
+_DEFAULT_TOOLS_BY_ROLE: Dict[str, List[str]] = {
+    "planner": ["ask_human", "web_search", "perplexity_research"],
+    "vision": ["screenshot"],
+    "troubleshoot": ["ask_human"],
+}
+
 
 async def _all_roles() -> List[AgentRole]:
     """Built-in roles plus every founder-defined/seeded custom role (see
@@ -28,6 +40,7 @@ def _default_config(role: AgentRole, preset: str = "BALANCED") -> AgentConfigura
         fallback_provider=p["fallback_provider"], fallback_model=p["fallback_model"],
         reasoning_level="medium" if role in ("planner", "reviewer") else None,
         max_attempts=2, automatic_fallback=True,
+        tools_enabled=list(_DEFAULT_TOOLS_BY_ROLE.get(role, [])),
     )
 
 
