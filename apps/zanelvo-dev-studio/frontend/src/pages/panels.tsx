@@ -5,6 +5,7 @@ import {
   KeyRound, FlaskConical,
 } from "lucide-react";
 import devstudio from "@/lib/devstudio";
+import { getReduceMotion, setReduceMotion } from "@/lib/motionPreference";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -977,6 +978,49 @@ function McpServersTab() {
   );
 }
 
+function AppearanceTab() {
+  const [reduceMotion, setReduceMotionState] = useState(() => getReduceMotion());
+
+  function toggle() {
+    const next = !reduceMotion;
+    setReduceMotion(next);
+    setReduceMotionState(next);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[11px] text-white/40">
+        Personal display preferences — stored on this device only, not synced to your account.
+      </div>
+      <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3.5">
+        <div>
+          <div className="text-sm text-white/85 font-medium">Reduce motion</div>
+          <div className="text-[11px] text-white/40 mt-0.5">
+            Turns off panel transitions, fades, and other animation throughout Dev Studio. Your
+            OS-level "reduce motion" setting is always respected too — this is for anyone who wants
+            it off here specifically, either direction.
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={reduceMotion}
+          onClick={toggle}
+          className={`relative flex-shrink-0 h-6 w-11 rounded-full transition-colors duration-150 ${
+            reduceMotion ? "bg-indigo-500" : "bg-white/15"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-150 ${
+              reduceMotion ? "translate-x-5" : "translate-x-0"
+            }`}
+          />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPanel() {
   const [caps, setCaps] = useState<any[]>([]);
   const [secretsConfigured, setSecretsConfigured] = useState<Record<string, boolean>>({});
@@ -1047,6 +1091,7 @@ export function SettingsPanel() {
               <TabsTrigger value="secrets">secrets {configuredCount ? `(${configuredCount})` : ""}</TabsTrigger>
               <TabsTrigger value="test">test models</TabsTrigger>
               <TabsTrigger value="mcp">MCP servers</TabsTrigger>
+              <TabsTrigger value="appearance">appearance</TabsTrigger>
             </TabsList>
 
             <TabsContent value="capabilities" className="space-y-1.5">
@@ -1179,6 +1224,10 @@ export function SettingsPanel() {
 
             <TabsContent value="mcp">
               <McpServersTab />
+            </TabsContent>
+
+            <TabsContent value="appearance">
+              <AppearanceTab />
             </TabsContent>
           </Tabs>
         </div>

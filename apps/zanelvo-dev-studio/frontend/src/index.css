@@ -70,3 +70,25 @@ body {
   );
   background-size: 400% 100%;
 }
+
+/* Respect the OS-level "reduce motion" preference, and — since not everyone wants to flip an
+   OS-wide setting just for one app — a manual override (Settings > Appearance > Reduce motion)
+   applies the same rule via html.reduce-motion regardless of the OS setting. Both paths collapse
+   animations/transitions to near-instant rather than removing them outright, so state changes (a
+   panel switching, a toast appearing) still register visually, just without motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}

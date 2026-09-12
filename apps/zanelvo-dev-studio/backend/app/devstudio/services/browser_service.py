@@ -37,7 +37,16 @@ async def run_scenario(task_id: str, base_url: str, scenario: str, actions: Opti
         run.id = str(res.inserted_id)
         return run
 
-    w, h = (int(x) for x in viewport.split("x"))
+    try:
+        w, h = (int(x) for x in viewport.split("x"))
+    except ValueError:
+        # A malformed viewport string (agent-supplied) must become a recorded "failed" BrowserRun
+        # like every other real failure in this function, never an unhandled 500 from the route.
+        run = BrowserRun(task_id=task_id, scenario=scenario, status="failed",
+                          console_errors=[f"Invalid viewport {viewport!r}; expected '<width>x<height>'"])
+        res = await db.ds_browser_runs.insert_one(run.to_mongo())
+        run.id = str(res.inserted_id)
+        return run
     console_errors: List[str] = []
     failed_requests: List[str] = []
     run = BrowserRun(task_id=task_id, scenario=scenario, status="running")
