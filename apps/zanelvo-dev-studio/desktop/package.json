@@ -1,0 +1,40 @@
+{
+  "name": "zanelvo-devstudio-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zanelvo Dev Studio packaged as a desktop app (Electron shell around the existing FastAPI backend + React frontend — see README.md).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis portable",
+    "dist:linux": "electron-builder --linux AppImage"
+  },
+  "dependencies": {
+    "mongodb-memory-server": "^9.2.0"
+  },
+  "devDependencies": {
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.zanelvo.devstudio",
+    "productName": "Zanelvo Dev Studio",
+    "asar": true,
+    "publish": null,
+    "files": ["main.js", "preload.js"],
+    "extraResources": [
+      { "from": "../frontend/dist", "to": "frontend" },
+      { "from": "../backend", "to": "backend", "filter": ["**/*", "!var/**", "!**/__pycache__/**", "!.env"] }
+    ],
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

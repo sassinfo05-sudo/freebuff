@@ -1,4 +1,4 @@
-import api from "./api";
+import api, { API_ORIGIN } from "./api";
 
 const base = "/devstudio";
 
@@ -76,7 +76,7 @@ export const devstudio = {
   previewExternal: (id: string, url: string) => api.post(`${base}/tasks/${id}/preview/external`, { url }),
   previewScreenshot: (id: string) => api.get(`${base}/tasks/${id}/preview/screenshot`),
 
-  eventsUrl: (id: string) => `${window.location.origin}/api${base}/tasks/${id}/events`,
+  eventsUrl: (id: string) => `${API_ORIGIN}/api${base}/tasks/${id}/events`,
 };
 
 export default devstudio;

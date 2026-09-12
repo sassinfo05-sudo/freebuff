@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Plus, FolderGit2, Brain, Bot, Github, Settings as SettingsIcon, MessageSquarePlus, LogOut,
   Sparkles, Pencil, Trash2,
@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { PromptDialog } from "@/components/ui/PromptDialog";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { CommandPalette, type CommandItem } from "@/components/ui/CommandPalette";
 import { statusDotClass, formatStatusLabel, isActiveStatus } from "@/lib/status";
 import type { Project, Branch, Task } from "@/lib/types";
 import TaskView from "./TaskView";
@@ -43,6 +44,7 @@ export default function DevStudioApp() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [creatingChat, setCreatingChat] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -126,6 +128,49 @@ export default function DevStudioApp() {
 
   const currentProject = projects.find((p) => p.id === projectId);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const commandItems = useMemo<CommandItem[]>(() => {
+    const chatItems: CommandItem[] = tasks.map((t) => ({
+      id: `task-${t.id}`,
+      label: t.title,
+      sublabel: formatStatusLabel(t.status),
+      icon: MessageSquarePlus,
+      onSelect: () => {
+        setTaskId(t.id);
+        setView("task");
+      },
+    }));
+    const navItems: CommandItem[] = NAV_ITEMS.map(([key, Icon, label]) => ({
+      id: `nav-${key}`,
+      label,
+      sublabel: "Panel",
+      icon: Icon,
+      onSelect: () => setView(key),
+    }));
+    const actionItems: CommandItem[] = [];
+    if (projectId && branch) {
+      actionItems.push({
+        id: "action-new-chat",
+        label: "New Chat",
+        sublabel: "Start a fresh chat in this repository",
+        icon: MessageSquarePlus,
+        onSelect: handleNewChat,
+      });
+    }
+    return [...actionItems, ...chatItems, ...navItems];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, projectId, branch]);
+
   return (
     <div className="h-screen w-screen flex bg-surface-0 text-white overflow-hidden">
       {/* LEFT SIDEBAR */}
@@ -134,7 +179,14 @@ export default function DevStudioApp() {
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 via-fuchsia-500 to-amber-400 shadow-glow flex items-center justify-center flex-shrink-0">
             <Sparkles className="w-3.5 h-3.5 text-white" strokeWidth={2.25} />
           </div>
-          <span className="font-semibold text-sm tracking-tight">Zanelvo Dev Studio</span>
+          <span className="font-semibold text-sm tracking-tight flex-1 min-w-0 truncate">Zanelvo Dev Studio</span>
+          <button
+            onClick={() => setPaletteOpen(true)}
+            title="Quick nav (⌘K / Ctrl+K)"
+            className="flex-shrink-0 text-[10px] text-white/35 border border-white/15 rounded px-1.5 py-0.5 hover:text-white/70 hover:border-white/30 transition-colors"
+          >
+            ⌘K
+          </button>
         </div>
 
         <div className="p-3 space-y-2 border-b border-white/10">
@@ -318,6 +370,7 @@ export default function DevStudioApp() {
         danger
         onConfirm={handleDelete}
       />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} items={commandItems} />
     </div>
   );
 }

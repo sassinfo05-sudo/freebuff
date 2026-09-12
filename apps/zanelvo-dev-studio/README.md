@@ -119,6 +119,20 @@ yarn install
 yarn dev   # http://localhost:5173, proxies /api to the backend on :8000
 ```
 
+### Desktop (Windows/Linux app instead of a browser tab)
+
+```bash
+cd apps/zanelvo-dev-studio/frontend && yarn build
+cd ../desktop
+npm install
+npm start          # run it locally
+npm run dist:win   # build a distributable .exe — see desktop/README.md for details/caveats
+```
+
+Same backend and frontend, no rewrite — Electron wraps them, starts a real embedded local MongoDB,
+and generates its own JWT secret/admin password on first launch. Requires Python 3.11+ on the
+machine it runs on (see `desktop/README.md` for exactly what is and isn't verified).
+
 ### Tests
 
 ```bash

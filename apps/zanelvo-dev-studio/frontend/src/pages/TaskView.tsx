@@ -33,6 +33,7 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState("");
   const [commitOpen, setCommitOpen] = useState(false);
+  const [sseConnected, setSseConnected] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const refreshAll = useCallback(async () => {
@@ -57,6 +58,7 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
       .then(({ data }) => setFiles(data.entries))
       .catch(() => setFiles([]));
 
+    setSseConnected(true);
     const es = new EventSource(devstudio.eventsUrl(taskId), { withCredentials: true });
     const onAny = (e: MessageEvent) => {
       try {
@@ -72,6 +74,16 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
       "plan_item_status", "supervisor_note", "stop_requested",
     ];
     kinds.forEach((k) => es.addEventListener(k, onAny as EventListener));
+    // The browser's EventSource reconnects on its own after a drop (network blip, backend
+    // restart) — this just surfaces that state so a long agent run doesn't look silently stuck,
+    // and refreshes plan/diff/test state once back (a missed event during the gap would otherwise
+    // never be reflected, since this backend doesn't implement SSE's Last-Event-ID replay).
+    let wasDisconnected = false;
+    es.onopen = () => {
+      setSseConnected(true);
+      if (wasDisconnected) { wasDisconnected = false; refreshAll(); }
+    };
+    es.onerror = () => { wasDisconnected = true; setSseConnected(false); };
     return () => es.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
@@ -163,6 +175,15 @@ export default function TaskView({ taskId, onTaskChanged }: { taskId: string; on
                 <>
                   <span className="text-white/20">·</span>
                   <span>{diff.changed_file_count} files changed</span>
+                </>
+              )}
+              {!sseConnected && (
+                <>
+                  <span className="text-white/20">·</span>
+                  <span className="flex items-center gap-1 text-amber-300">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    Reconnecting…
+                  </span>
                 </>
               )}
             </div>
