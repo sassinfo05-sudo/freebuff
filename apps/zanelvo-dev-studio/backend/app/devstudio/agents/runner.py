@@ -8,7 +8,7 @@ import json
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ...db import get_db
 from ..models import AgentConfiguration, AgentRole
@@ -91,7 +91,17 @@ async def call_structured(registry: ModelRegistry, config: AgentConfiguration, t
 
     If `images_b64` is supplied (task attachments flagged for vision) the call is sent as a
     vision request to any attempt whose model supports vision; models that don't get the normal
-    text-only structured call, so a non-vision fallback still runs rather than hard-failing."""
+    text-only structured call, so a non-vision fallback still runs rather than hard-failing.
+
+    If this role has any MCP servers or built-in tools configured (AgentConfiguration.mcp_servers /
+    .tools_enabled) — and no images_b64, since combining vision with a tool loop isn't supported —
+    this transparently delegates to call_with_tools() instead. Every existing call site (roles.py)
+    is unchanged either way; tool access is purely a per-role Settings/Agents-panel toggle."""
+    if not images_b64 and (config.mcp_servers or config.tools_enabled):
+        tools = await _tools_for_config(config)
+        if tools:
+            return await call_with_tools(registry, config, task_id, role, system, prompt, action,
+                                          tools, plan_item_id=plan_item_id, max_tokens=max_tokens)
     attempts = [(config.primary_provider, config.primary_model)]
     if config.automatic_fallback and config.fallback_provider and config.fallback_model:
         attempts.append((config.fallback_provider, config.fallback_model))
@@ -131,6 +141,216 @@ async def call_structured(registry: ModelRegistry, config: AgentConfiguration, t
             await _finish_run(run_id, task_id, role, "failed", str(e), int((time.monotonic() - t0) * 1000))
         except ProviderNotImplemented as e:
             classification = "not_implemented"
+            last_err = e
+            await _finish_run(run_id, task_id, role, "failed", str(e), int((time.monotonic() - t0) * 1000))
+        except Exception as e:  # noqa: BLE001
+            classification = "error"
+            last_err = e
+            await provider_health.record_exception(provider_name, e)
+            await _finish_run(run_id, task_id, role, "failed", f"{type(e).__name__}: {e}",
+                                int((time.monotonic() - t0) * 1000))
+    raise AgentStepFailed(f"{role} step '{action}' failed on all configured models: {last_err}",
+                           classification=classification)
+
+
+# --- Tool-calling loop (MCP + built-in tools) -----------------------------------------------
+
+class ToolExecutionError(Exception):
+    """A tool ran but failed. Caught by _execute_tool_call and reported back to the model as a
+    tool_result, never raised up to crash the agent step — the model gets to see and adapt to
+    the failure, same as a human using a broken tool would."""
+
+
+BUILTIN_TOOLS: Dict[str, Dict[str, Any]] = {
+    "ask_human": {
+        "name": "ask_human",
+        "description": "Pause this task and ask the founder a question. Use only when truly "
+                        "blocked — an ambiguous requirement, a destructive/irreversible choice, "
+                        "or missing credentials only they can provide. The task pauses (status "
+                        "BLOCKED) until they reply in the chat; you will not get an answer in "
+                        "this same turn, so end your response right after calling this.",
+        "inputSchema": {"type": "object", "properties": {"question": {"type": "string"}},
+                          "required": ["question"]},
+    },
+    "finish": {
+        "name": "finish",
+        "description": "Signal that this step is genuinely complete and its acceptance criteria "
+                        "are met. Call this instead of just stopping — it's how the orchestrator "
+                        "tells a deliberate finish apart from a stall.",
+        "inputSchema": {"type": "object", "properties": {"summary": {"type": "string"}},
+                          "required": ["summary"]},
+    },
+    "web_search": {
+        "name": "web_search",
+        "description": "Search the public web for current information. Only available when this "
+                        "role's primary model is Anthropic — routed to Claude's own server-hosted "
+                        "web search, not a separate search API this app calls itself.",
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}},
+                          "required": ["query"]},
+    },
+    "screenshot": {
+        "name": "screenshot",
+        "description": "Take a real screenshot of a URL using the same headless-browser (Playwright) "
+                        "infrastructure already used for browser QA.",
+        "inputSchema": {"type": "object", "properties": {
+            "url": {"type": "string"}, "label": {"type": "string"}}, "required": ["url"]},
+    },
+    "perplexity_research": {
+        "name": "perplexity_research",
+        "description": "Ask Perplexity's research API a question requiring deep, cited web "
+                        "research (competitor/market/pricing/standards). Requires a configured "
+                        "Perplexity API key — fails with a clear message if absent, never fakes "
+                        "an answer.",
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}},
+                          "required": ["query"]},
+    },
+    "get_assets": {
+        "name": "get_assets",
+        "description": "NOT IMPLEMENTED. No real stock-image/asset provider is configured for "
+                        "this app — calling this always returns an explanatory error rather than "
+                        "a fabricated image or URL.",
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}},
+                          "required": ["query"]},
+    },
+}
+
+
+async def _run_builtin_tool(name: str, arguments: Dict[str, Any], *, task_id: str, role: AgentRole) -> str:
+    if name == "ask_human":
+        from ..services import task_manager
+        question = str(arguments.get("question", "")).strip() or "The agent needs your input."
+        await task_manager.set_status(task_id, "BLOCKED", note=f"{role} is asking: {question}")
+        await task_manager.update_task(task_id, blocked_reason=question)
+        return ("Task paused; the founder has been asked and will reply via chat. You will not "
+                "receive their answer in this turn — stop here.")
+    if name == "finish":
+        return f"Acknowledged: {arguments.get('summary', 'done')}"
+    if name == "web_search":
+        # Real Anthropic-hosted search is wired directly into AnthropicProvider.generate_with_tools
+        # (mapped to Claude's own server-hosted search tool there, resolved within that one API
+        # call — never routed through this executor) when the calling role's model is Anthropic.
+        # Any other provider has no search backend configured, so say so rather than fabricate.
+        raise ToolExecutionError(
+            "web_search has no independent search backend configured in this build — it only "
+            "works when this role's primary model is Anthropic (server-hosted search). Configure "
+            "a real search MCP server instead for other providers."
+        )
+    if name == "screenshot":
+        from ..services import browser_service
+        url = str(arguments.get("url", "")).strip()
+        if not url:
+            raise ToolExecutionError("screenshot requires a 'url'")
+        label = str(arguments.get("label") or "agent_screenshot")
+        run = await browser_service.run_scenario(task_id, url, label)
+        if run.status == "unavailable":
+            raise ToolExecutionError(run.notes or "Browser automation is unavailable.")
+        return f"Screenshot captured (browser run {run.id}, status={run.status})."
+    if name == "perplexity_research":
+        from ..services import perplexity_service, settings_service
+        api_key = await settings_service.get_secret("perplexity_api_key")
+        return await perplexity_service.research(str(arguments.get("query", "")), api_key)
+    if name == "get_assets":
+        raise ToolExecutionError(
+            "get_assets has no real asset provider configured in this build — not implemented "
+            "rather than faked. Wire a real image/stock-asset API here if you need this."
+        )
+    raise ToolExecutionError(f"Unknown built-in tool '{name}'")
+
+
+async def _tools_for_config(config: AgentConfiguration) -> List[Dict[str, Any]]:
+    from ..services import mcp_service
+    tools = await mcp_service.tools_for_servers(config.mcp_servers)
+    for name in config.tools_enabled:
+        if name in BUILTIN_TOOLS:
+            tools.append(BUILTIN_TOOLS[name])
+    return tools
+
+
+async def _execute_tool_call(call: Dict[str, Any], tools_by_name: Dict[str, Dict[str, Any]], *,
+                              task_id: str, role: AgentRole) -> Dict[str, Any]:
+    name = call["name"]
+    tool = tools_by_name.get(name)
+    try:
+        if tool and "_mcp_server" in tool:
+            from ..services import mcp_service
+            server = await mcp_service.get_server_by_name(tool["_mcp_server"])
+            if not server:
+                raise ToolExecutionError(f"MCP server '{tool['_mcp_server']}' is no longer configured")
+            content = await mcp_service.call_tool(server, name, call.get("arguments") or {})
+        elif name in BUILTIN_TOOLS:
+            content = await _run_builtin_tool(name, call.get("arguments") or {}, task_id=task_id, role=role)
+        else:
+            content = f"ERROR: unknown tool '{name}'"
+        return {"id": call["id"], "content": content}
+    except Exception as e:  # noqa: BLE001 — a failed tool call becomes tool_result content for the
+        # model to see and adapt to, not a crash of the whole agent step (see ToolExecutionError).
+        return {"id": call["id"], "content": f"ERROR: {type(e).__name__}: {e}"}
+
+
+async def call_with_tools(registry: ModelRegistry, config: AgentConfiguration, task_id: str,
+                           role: AgentRole, system: str, prompt: str, action: str,
+                           tools: List[Dict[str, Any]], plan_item_id: Optional[str] = None,
+                           max_tokens: int = 4096, max_iterations: int = 6) -> Dict[str, Any]:
+    """Like call_structured, but drives a bounded tool-calling loop: the model can call any of
+    `tools` (MCP-sourced + built-in), see the results, and call more, before returning its final
+    JSON answer. Same primary -> fallback behavior as call_structured; a provider that doesn't
+    implement generate_with_tools() raises ProviderNotConfigured from the base class default,
+    which IS the fallback trigger — a role misconfigured onto a non-tool-capable model degrades
+    the same way an unconfigured-credentials one does, never hangs."""
+    attempts = [(config.primary_provider, config.primary_model)]
+    if config.automatic_fallback and config.fallback_provider and config.fallback_model:
+        attempts.append((config.fallback_provider, config.fallback_model))
+    tools_by_name = {t["name"]: t for t in tools}
+
+    last_err: Optional[Exception] = None
+    classification = "error"
+    for provider_name, model in attempts:
+        run_id = await _start_run(task_id, role, provider_name, model, action, plan_item_id)
+        t0 = time.monotonic()
+        try:
+            provider = registry.get(provider_name)
+            history: Optional[Any] = None
+            tool_results: Optional[List[Dict[str, Any]]] = None
+            cur_prompt: Optional[str] = prompt
+            result: Optional[LLMResult] = None
+            for _ in range(max_iterations):
+                result = await provider.generate_with_tools(
+                    system=system, model=model, tools=tools, prompt=cur_prompt,
+                    history=history, tool_results=tool_results, max_tokens=max_tokens)
+                await usage_tracker.record_invocation(task_id, role, result, agent_run_id=run_id,
+                                                        kind="generate_structured")
+                if not result.tool_calls:
+                    break
+                cur_prompt = None
+                history = result.tool_loop_history
+                executed = []
+                for call in result.tool_calls:
+                    executed.append(await _execute_tool_call(call, tools_by_name, task_id=task_id, role=role))
+                    await activity_service.emit(task_id, "tool_call", {
+                        "role": role, "tool": call["name"],
+                        "server": (tools_by_name.get(call["name"]) or {}).get("_mcp_server"),
+                    })
+                tool_results = executed
+            else:
+                raise AgentStepFailed(
+                    f"{role} step '{action}' hit the {max_iterations}-call tool loop limit "
+                    "without a final answer", classification="error")
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            await provider_health.record(provider_name, "ok")
+            parsed = extract_json(result.text) if result is not None else {}
+            await _finish_run(run_id, task_id, role, "succeeded", "ok", duration_ms)
+            return parsed
+        except ProviderNotConfigured as e:
+            classification = "requires_credentials"
+            last_err = e
+            await provider_health.record_exception(provider_name, e)
+            await _finish_run(run_id, task_id, role, "failed", str(e), int((time.monotonic() - t0) * 1000))
+        except ProviderNotImplemented as e:
+            classification = "not_implemented"
+            last_err = e
+            await _finish_run(run_id, task_id, role, "failed", str(e), int((time.monotonic() - t0) * 1000))
+        except AgentStepFailed as e:
+            classification = e.classification
             last_err = e
             await _finish_run(run_id, task_id, role, "failed", str(e), int((time.monotonic() - t0) * 1000))
         except Exception as e:  # noqa: BLE001

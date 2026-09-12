@@ -297,6 +297,41 @@ class EmergentUniversalKeyProvider(LLMProvider):
         return LLMResult(text=resp.content or "", usage=self._usage(resp.usage, dur),
                          model=model, provider=self.name)
 
+    async def generate_with_tools(self, *, system: str, model: str, tools: List[Dict[str, Any]],
+                                   prompt: Optional[str] = None, history: Optional[Any] = None,
+                                   tool_results: Optional[List[Dict[str, Any]]] = None,
+                                   max_tokens: int = 4096) -> LLMResult:
+        # `history`, when set, IS the same stateful LlmChat instance from the previous turn (the
+        # SDK's own with_tools()/add_tool_result()/send_message_with_tools() already track
+        # conversation state internally) — round-tripping the object itself is simpler and more
+        # faithful than re-deriving a messages array, and this provider is only ever called
+        # in-process, never (de)serialized, so an opaque object is safe here.
+        _LlmChat, UserMessage, _ImageContent, ChatError = _sdk()
+        chat = history if history is not None else self._chat(system=system, model=model)
+        emergent_tools = [
+            {"type": "function", "function": {"name": t["name"], "description": t.get("description", ""),
+                                               "parameters": t["inputSchema"]}}
+            for t in tools
+        ]
+        chat = chat.with_tools(emergent_tools).with_params(max_tokens=self._floor_tokens(max_tokens))
+        t0 = time.monotonic()
+        try:
+            if tool_results:
+                for r in tool_results:
+                    chat.add_tool_result(r["id"], r["content"])
+                resp = await chat.send_message_with_tools()
+            else:
+                resp = await chat.send_message_with_tools(UserMessage(text=prompt))
+        except ChatError as e:
+            raise _normalize_error(e) from e
+        dur = int((time.monotonic() - t0) * 1000)
+        tool_calls = (
+            [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in resp.tool_calls]
+            if resp.tool_calls else None
+        )
+        return LLMResult(text=resp.content or "", usage=self._usage(resp.usage, dur),
+                         model=model, provider=self.name, tool_calls=tool_calls, tool_loop_history=chat)
+
     async def stream(self, *, system: str, prompt: str, model: str,
                      max_tokens: int = 4096) -> AsyncIterator[str]:
         from emergentintegrations.llm.chat import TextDelta  # local — keeps module import lazy

@@ -138,3 +138,48 @@ class AnthropicProvider(LLMProvider):
         ) as stream:
             async for text in stream.text_stream:
                 yield text
+
+    async def generate_with_tools(self, *, system: str, model: str, tools: List[Dict[str, Any]],
+                                   prompt: Optional[str] = None, history: Optional[Any] = None,
+                                   tool_results: Optional[List[Dict[str, Any]]] = None,
+                                   max_tokens: int = 4096) -> LLMResult:
+        client = self._client()
+        messages: List[Dict[str, Any]] = list(history) if history is not None else []
+        if tool_results:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": r["id"], "content": r["content"]}
+                    for r in tool_results
+                ],
+            })
+        elif prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+        # "web_search" (a runner.py built-in tool) maps onto Claude's own server-hosted search
+        # instead of a JSON-schema tool this app would have to execute itself — Anthropic resolves
+        # it within this same API call and the result never comes back as a tool_use block (see
+        # the type=="tool_use" filter below), so it needs no entry in runner.py's tool executor.
+        # NOTE: not independently verified against a live call in this build (no API key
+        # available here) — if Anthropic's current tool-type string has moved on, this specific
+        # tool will error and the agent step falls back the same as any other provider error,
+        # rather than silently doing nothing.
+        anthropic_tools = [
+            {"type": "web_search_20250305", "name": "web_search"} if t["name"] == "web_search"
+            else {"name": t["name"], "description": t.get("description", ""), "input_schema": t["inputSchema"]}
+            for t in tools
+        ]
+        t0 = time.monotonic()
+        resp = await client.messages.create(
+            model=model, max_tokens=max_tokens, system=system, messages=messages, tools=anthropic_tools,
+        )
+        dur = int((time.monotonic() - t0) * 1000)
+        messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
+        text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        tool_calls = [
+            {"id": b.id, "name": b.name, "arguments": b.input}
+            for b in resp.content if getattr(b, "type", None) == "tool_use"
+        ]
+        return LLMResult(
+            text=text, usage=self._usage_from_response(resp, dur), model=model, provider=self.name,
+            tool_calls=tool_calls or None, tool_loop_history=messages,
+        )

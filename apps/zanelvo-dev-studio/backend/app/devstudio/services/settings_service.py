@@ -17,7 +17,7 @@ from ..providers.registry import ModelRegistry
 _SECRET_KEYS = ("github_pat", "anthropic_api_key", "openai_api_key", "gemini_api_key",
                  "emergent_universal_key", "aws_access_key_id", "aws_secret_access_key",
                  "aws_session_token", "aws_region", "gcp_project_id", "gcp_location",
-                 "gcp_service_account_json")
+                 "gcp_service_account_json", "perplexity_api_key")
 
 
 async def get_settings() -> ApplicationSettings:
@@ -66,6 +66,7 @@ async def get_secret(name: str) -> Optional[str]:
         # google-auth's ADC chain) — this is Dev Studio's own name for the raw JSON key contents,
         # for parity with how every other secret here is set via an env var override.
         "gcp_service_account_json": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "perplexity_api_key": "PERPLEXITY_API_KEY",
     }
     env_val = os.environ.get(env_map.get(name, ""), "")
     if env_val:

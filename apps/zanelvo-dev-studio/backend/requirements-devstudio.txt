@@ -21,3 +21,11 @@ playwright==1.55.0
 # version wasn't checked against a live index this session (unlike anthropic/openai/google-genai,
 # see the commit that added them) — floor-pinned rather than exact-pinned for that reason.
 boto3>=1.34.0
+# MCP (Model Context Protocol) client — lets agents call tools exposed by connected MCP servers
+# (see app/devstudio/services/mcp_service.py). mcp>=1.10 requires a newer sse-starlette which in
+# turn requires starlette>=0.49.1, conflicting with fastapi==0.116.1's starlette<0.48.0 pin — this
+# was reproduced with an actual `pip install` (not assumed), so both are pinned explicitly to
+# versions verified to coexist: mcp==1.9.4 (Requires-Dist: starlette>=0.27, no ceiling) with
+# sse-starlette explicitly pinned below its own starlette>=0.49 floor (introduced in its 3.x line).
+mcp==1.9.4
+sse-starlette==2.1.3

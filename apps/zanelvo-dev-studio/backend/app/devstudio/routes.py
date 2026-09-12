@@ -10,15 +10,16 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Up
 from pydantic import BaseModel
 from starlette.responses import Response, StreamingResponse
 
-from .agents import git_agent, orchestrator, qa_agent, registry as agent_registry
+from .agents import git_agent, orchestrator, qa_agent, runner
+from .agents import registry as agent_registry
 from .models import (AgentRole, CreateProjectRequest, CreateTaskRequest, MemoryCategory,
                        ModelPreset, TaskMessageRequest, TaskUpdateRequest)
 from .providers import registry as provider_registry
 from .security import require_devstudio_access, require_devstudio_write
-from .services import (activity_service, browser_service, checkpoint_service, execution_service,
-                         github_provider, indexer, memory_service, preview_service,
-                         provider_health, repository_service, settings_service, task_manager,
-                         upload_service, usage_tracker, workspace_manager)
+from .services import (activity_service, browser_service, checkpoint_service, custom_agent_service,
+                         execution_service, github_provider, indexer, mcp_service, memory_service,
+                         preview_service, provider_health, repository_service, settings_service,
+                         task_manager, upload_service, usage_tracker, workspace_manager)
 from .services.diff_service import get_diff_summary
 from .services.file_service import FileService
 
@@ -352,6 +353,8 @@ class AgentConfigBody(BaseModel):
     reasoning_level: Optional[str] = None
     max_attempts: Optional[int] = None
     automatic_fallback: Optional[bool] = None
+    mcp_servers: Optional[List[str]] = None
+    tools_enabled: Optional[List[str]] = None
 
 
 @router.put("/agents/config/{role}")
@@ -366,6 +369,145 @@ async def update_agent_config(role: AgentRole, body: AgentConfigBody,
 async def apply_preset(preset: ModelPreset, user: str = Depends(require_devstudio_write)):
     configs = await agent_registry.apply_preset(preset)
     return {"agents": {role: cfg.model_dump() for role, cfg in configs.items()}}
+
+
+@router.get("/tools/builtin")
+async def list_builtin_tools(user: str = Depends(require_devstudio_access)):
+    """The fixed built-in tool toggles (Ask Human, Finish, Web Search, Screenshot, Perplexity
+    Research, Get Assets) any agent role can enable — see agents/runner.py::BUILTIN_TOOLS for
+    what each one actually does (and which are genuinely implemented vs. documented-not-faked)."""
+    return {"tools": [{"name": t["name"], "description": t["description"]}
+                        for t in runner.BUILTIN_TOOLS.values()]}
+
+
+# --- Custom agent roles ---------------------------------------------------------------------
+
+class CustomAgentRoleBody(BaseModel):
+    role: str
+    label: str
+    system_prompt: str
+    category: str = "implementer"
+    icon: Optional[str] = None
+
+
+class CustomAgentRoleUpdateBody(BaseModel):
+    label: Optional[str] = None
+    system_prompt: Optional[str] = None
+    category: Optional[str] = None
+    icon: Optional[str] = None
+
+
+@router.get("/agents/roles")
+async def list_agent_roles(user: str = Depends(require_devstudio_access)):
+    from .models import BUILTIN_AGENT_ROLES
+
+    custom = await custom_agent_service.list_roles()
+    return {
+        "builtin_roles": list(BUILTIN_AGENT_ROLES),
+        "custom_roles": [r.model_dump() for r in custom],
+    }
+
+
+@router.post("/agents/roles")
+async def create_agent_role(body: CustomAgentRoleBody, user: str = Depends(require_devstudio_write)):
+    try:
+        role = await custom_agent_service.create_role(**body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return role.model_dump()
+
+
+@router.put("/agents/roles/{role}")
+async def update_agent_role(role: str, body: CustomAgentRoleUpdateBody,
+                              user: str = Depends(require_devstudio_write)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        updated = await custom_agent_service.update_role(role, **fields)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return updated.model_dump()
+
+
+@router.delete("/agents/roles/{role}")
+async def delete_agent_role(role: str, user: str = Depends(require_devstudio_write)):
+    try:
+        await custom_agent_service.delete_role(role)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True}
+
+
+# --- MCP servers -----------------------------------------------------------------------------
+
+class MCPServerBody(BaseModel):
+    name: str
+    transport: str = "stdio"
+    command: Optional[str] = None
+    args: List[str] = []
+    url: Optional[str] = None
+    env: dict = {}
+    preset: Optional[str] = None
+    enabled: bool = True
+
+
+class MCPServerUpdateBody(BaseModel):
+    name: Optional[str] = None
+    transport: Optional[str] = None
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    url: Optional[str] = None
+    env: Optional[dict] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/mcp/presets")
+async def list_mcp_presets(user: str = Depends(require_devstudio_access)):
+    return {"presets": mcp_service.PRESETS}
+
+
+@router.get("/mcp/servers")
+async def list_mcp_servers(user: str = Depends(require_devstudio_access)):
+    servers = await mcp_service.list_servers()
+    # env values are never returned — only which keys are set — same "configured: bool" pattern
+    # as every other secret in this app (see settings_service.secrets_status).
+    out = []
+    for s in servers:
+        d = s.model_dump()
+        d["env_keys"] = list(d.pop("env", {}).keys())
+        out.append(d)
+    return {"servers": out}
+
+
+@router.post("/mcp/servers")
+async def create_mcp_server(body: MCPServerBody, user: str = Depends(require_devstudio_write)):
+    if await mcp_service.get_server_by_name(body.name):
+        raise HTTPException(400, f"An MCP server named '{body.name}' already exists")
+    server = await mcp_service.create_server(**body.model_dump())
+    d = server.model_dump()
+    d["env_keys"] = list(d.pop("env", {}).keys())
+    return d
+
+
+@router.put("/mcp/servers/{server_id}")
+async def update_mcp_server(server_id: str, body: MCPServerUpdateBody,
+                              user: str = Depends(require_devstudio_write)):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    server = await mcp_service.update_server(server_id, **fields)
+    d = server.model_dump()
+    d["env_keys"] = list(d.pop("env", {}).keys())
+    return d
+
+
+@router.delete("/mcp/servers/{server_id}")
+async def delete_mcp_server(server_id: str, user: str = Depends(require_devstudio_write)):
+    await mcp_service.delete_server(server_id)
+    return {"ok": True}
+
+
+@router.post("/mcp/servers/{server_id}/test")
+async def test_mcp_server(server_id: str, user: str = Depends(require_devstudio_write)):
+    """Connects to the server for real and lists its tools — never a fabricated 'ok'."""
+    return await mcp_service.test_server(server_id)
 
 
 # --- Tasks -------------------------------------------------------------------------------

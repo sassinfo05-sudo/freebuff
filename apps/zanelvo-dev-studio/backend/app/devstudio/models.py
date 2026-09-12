@@ -33,10 +33,21 @@ PlanItemStatus = Literal[
 
 TaskMode = Literal["feature", "bugfix", "refactor", "chore", "investigation"]
 
-AgentRole = Literal[
+# Plain str, not a Literal: founders can define custom agent roles at runtime (see
+# CustomAgentRoleConfig below) whose names Pydantic can't know about statically. The set of
+# actually-valid roles is enforced at the registry/DB layer (agents/registry.py + roles.py), not
+# via static typing — the same tradeoff CreateTaskRequest.mode etc. don't need since those really
+# are closed sets.
+AgentRole = str
+
+# The fixed, always-present roles — every other AgentRole value is a custom one from
+# CustomAgentRoleConfig (which includes the seeded Vision/Testing/Integration/Troubleshoot/
+# Deployment specialists — "built-in" in the product sense, but stored as data, not code, so
+# they're editable like any other custom role).
+BUILTIN_AGENT_ROLES = (
     "supervisor", "repository_analyst", "planner", "design", "frontend", "backend",
     "integration", "qa", "reviewer", "git",
-]
+)
 
 ModelPreset = Literal["ECONOMICAL", "BALANCED", "MAX_QUALITY", "CUSTOM"]
 
@@ -150,6 +161,44 @@ class AgentConfiguration(BaseDocument):
     reasoning_level: Optional[Literal["low", "medium", "high"]] = None
     max_attempts: int = 2
     automatic_fallback: bool = True
+    # Non-empty in either field switches this role's calls onto the tool-calling loop (see
+    # agents/runner.py::call_with_tools) instead of a plain one-shot structured call — the model
+    # can then call any tool from these MCP servers plus these built-in tools before answering.
+    mcp_servers: List[str] = Field(default_factory=list)          # MCPServerConfig.name values
+    tools_enabled: List[str] = Field(default_factory=list)        # BUILTIN_TOOLS keys (runner.py)
+
+
+class CustomAgentRoleConfig(BaseDocument):
+    """A founder-defined agent role — either a brand-new one, or one of the seeded specialist
+    roles (Vision/Frontend Testing/Backend Testing/Fullstack Testing/Troubleshoot/Deployment —
+    "integration" already existed as a built-in implementer role, see BUILTIN_AGENT_ROLES). Stored
+    as data rather than code so they're all equally editable; `built_in=True` just means "don't
+    let this get deleted" for the ones the product ships with by default."""
+    role: str                                    # unique slug; used as AgentConfiguration.role
+    label: str                                   # display name, e.g. "Vision Agent"
+    system_prompt: str
+    category: Literal["implementer", "specialist"] = "specialist"
+    # implementer roles are selectable by the Planner as a plan item's assigned_agent (like the
+    # built-in design/frontend/backend/integration); specialist roles are invoked by name for a
+    # specific step (like qa/reviewer/git) and never appear in the Planner's own menu.
+    built_in: bool = False
+    icon: Optional[str] = None                    # lucide-react icon name, frontend-only concern
+
+
+class MCPServerConfig(BaseDocument):
+    """A connected MCP (Model Context Protocol) server — either a preset (Notion, Memory) or a
+    fully custom one. See services/mcp_service.py for the real client that connects to these."""
+    name: str                                      # unique; also the tool-routing key
+    transport: Literal["stdio", "http"] = "stdio"
+    command: Optional[str] = None                  # stdio: e.g. "npx"
+    args: List[str] = Field(default_factory=list)   # stdio: e.g. ["-y", "@notionhq/notion-mcp-server"]
+    url: Optional[str] = None                       # http: streamable-HTTP endpoint
+    env: Dict[str, str] = Field(default_factory=dict)   # values stored ENCRYPTED — see mcp_service.py
+    enabled: bool = True
+    preset: Optional[str] = None                    # "notion" | "memory" | None (fully custom)
+    last_tool_count: Optional[int] = None            # from the last successful test_server() call
+    last_checked_at: Optional[str] = None
+    last_error: Optional[str] = None                 # from the last FAILED test_server() call
 
 
 class AgentRun(BaseDocument):

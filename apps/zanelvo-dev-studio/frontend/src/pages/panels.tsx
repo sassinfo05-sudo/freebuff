@@ -164,7 +164,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 const EDITABLE_FIELDS = [
   "enabled", "primary_provider", "primary_model", "fallback_provider", "fallback_model",
-  "reasoning_level", "max_attempts", "automatic_fallback",
+  "reasoning_level", "max_attempts", "automatic_fallback", "mcp_servers", "tools_enabled",
 ] as const;
 
 type ModelInfo = { id: string; provider: string; label: string };
@@ -177,9 +177,66 @@ type AgentDraft = {
   reasoning_level: string | null;
   max_attempts: number;
   automatic_fallback: boolean;
+  mcp_servers: string[];
+  tools_enabled: string[];
 };
 
 const PRESETS = ["ECONOMICAL", "BALANCED", "MAX_QUALITY"] as const;
+
+function NewCustomRoleForm({ onCreated }: { onCreated: () => void }) {
+  const [role, setRole] = useState("");
+  const [label, setLabel] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    const slug = role.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!slug || !label.trim() || !systemPrompt.trim()) {
+      toast.error("Role slug, label, and system prompt are all required");
+      return;
+    }
+    setBusy(true);
+    try {
+      await devstudio.createAgentRole({
+        role: slug, label: label.trim(), system_prompt: systemPrompt.trim(), category: "implementer",
+      });
+      toast.success(`Created ${label.trim()}`);
+      onCreated();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not create agent role");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/[0.06] p-3 space-y-2 animate-fade-in">
+      <div className="text-xs font-medium text-white/80">New custom agent role</div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <div className="text-white/40 mb-1">Slug (unique, used internally)</div>
+          <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. localization" />
+        </div>
+        <div>
+          <div className="text-white/40 mb-1">Display name</div>
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Localization Agent" />
+        </div>
+      </div>
+      <div>
+        <div className="text-white/40 mb-1">System prompt</div>
+        <Textarea rows={4} value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)}
+          placeholder="You are the ... Agent. Given ..., you should ..." />
+      </div>
+      <div className="text-[11px] text-white/35">
+        The Planner can assign plan items directly to this role, exactly like Design/Frontend/Backend —
+        it returns file edits using the same contract.
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" disabled={busy} loading={busy} onClick={submit}>Create role</Button>
+      </div>
+    </div>
+  );
+}
 
 export function AgentsPanel() {
   const [agents, setAgents] = useState<Record<string, AgentDraft>>({});
@@ -191,20 +248,55 @@ export function AgentsPanel() {
   const [bulkProvider, setBulkProvider] = useState("");
   const [bulkModel, setBulkModel] = useState("");
   const [bulkApplying, setBulkApplying] = useState<"primary" | "fallback" | null>(null);
+  const [mcpServers, setMcpServers] = useState<{ name: string; enabled: boolean }[]>([]);
+  const [builtinTools, setBuiltinTools] = useState<{ name: string; description: string }[]>([]);
+  const [builtinRoles, setBuiltinRoles] = useState<string[]>([]);
+  const [customRoles, setCustomRoles] = useState<{ role: string; label: string; built_in: boolean }[]>([]);
+  const [newRoleOpen, setNewRoleOpen] = useState(false);
 
   async function load() {
-    const [{ data: agentData }, { data: modelData }] = await Promise.all([
-      devstudio.agentConfigs(),
-      devstudio.providerModels(),
-    ]);
+    const [{ data: agentData }, { data: modelData }, { data: mcpData }, { data: toolsData }, { data: rolesData }] =
+      await Promise.all([
+        devstudio.agentConfigs(),
+        devstudio.providerModels(),
+        devstudio.listMcpServers(),
+        devstudio.listBuiltinTools(),
+        devstudio.listAgentRoles(),
+      ]);
     setAgents(agentData.agents);
     setDrafts(Object.fromEntries(Object.entries(agentData.agents).map(([r, c]) => [r, { ...(c as AgentDraft) }])));
     setModelsByProvider(modelData.models);
     setProviders(modelData.providers);
+    setMcpServers(mcpData.servers);
+    setBuiltinTools(toolsData.tools);
+    setBuiltinRoles(rolesData.builtin_roles);
+    setCustomRoles(rolesData.custom_roles);
   }
   useEffect(() => {
     load();
   }, []);
+
+  function roleLabel(role: string): string {
+    return customRoles.find((r) => r.role === role)?.label || role.replace(/_/g, " ");
+  }
+
+  function toggleArrayField(role: string, field: "mcp_servers" | "tools_enabled", value: string) {
+    setDrafts((d) => {
+      const current = d[role][field];
+      const next = current.includes(value) ? current.filter((v) => v !== value) : [...current, value];
+      return { ...d, [role]: { ...d[role], [field]: next } };
+    });
+  }
+
+  async function deleteRole(role: string) {
+    try {
+      await devstudio.deleteAgentRole(role);
+      toast.success(`Deleted ${roleLabel(role)}`);
+      await load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not delete role");
+    }
+  }
 
   async function applyPreset(preset: string) {
     const { data } = await devstudio.applyPreset(preset);
@@ -267,6 +359,8 @@ export function AgentsPanel() {
         reasoning_level: d.reasoning_level || null,
         max_attempts: d.max_attempts,
         automatic_fallback: d.automatic_fallback,
+        mcp_servers: d.mcp_servers,
+        tools_enabled: d.tools_enabled,
       });
       setAgents((a) => ({ ...a, [role]: data }));
       setDrafts((dr) => ({ ...dr, [role]: { ...data } }));
@@ -299,6 +393,9 @@ export function AgentsPanel() {
                 {p}
               </Button>
             ))}
+            <Button size="sm" onClick={() => setNewRoleOpen((v) => !v)}>
+              {newRoleOpen ? "Cancel" : "New custom agent"}
+            </Button>
           </div>
         }
       />
@@ -306,8 +403,10 @@ export function AgentsPanel() {
         <div className="p-6 max-w-3xl mx-auto space-y-2.5">
           <div className="text-[11px] text-white/40 -mt-1 mb-1">
             Presets set every role at once. Expand a role to override it individually — including
-            its fallback — without leaving the preset for everything else.
+            its fallback, MCP servers, and tools — without leaving the preset for everything else.
           </div>
+
+          {newRoleOpen && <NewCustomRoleForm onCreated={() => { setNewRoleOpen(false); load(); }} />}
 
           <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-2">
             <div className="text-xs font-medium text-white/70">Switch every role at once</div>
@@ -365,12 +464,18 @@ export function AgentsPanel() {
                   className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left"
                 >
                   <ChevronRight className={`w-3.5 h-3.5 text-white/35 flex-shrink-0 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
-                  <span className="font-medium text-white/85 capitalize text-xs flex-shrink-0">{role.replace(/_/g, " ")}</span>
+                  <span className="font-medium text-white/85 text-xs flex-shrink-0">{roleLabel(role)}</span>
+                  {!builtinRoles.includes(role) && <Badge tone="brand" className="flex-shrink-0">custom</Badge>}
                   <span className="text-white/35 text-[11px] truncate min-w-0">
                     {cfg.primary_provider}/{cfg.primary_model || "—"}
                     {cfg.fallback_model && <span> → {cfg.fallback_provider}/{cfg.fallback_model}</span>}
                   </span>
                   <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+                    {(cfg.mcp_servers?.length || cfg.tools_enabled?.length) ? (
+                      <Badge tone="info">
+                        {(cfg.mcp_servers?.length || 0) + (cfg.tools_enabled?.length || 0)} tools
+                      </Badge>
+                    ) : null}
                     {dirty && <Badge tone="warning" dot className="animate-scale-in">unsaved</Badge>}
                     {!cfg.enabled && <Badge tone="neutral">disabled</Badge>}
                   </div>
@@ -450,7 +555,44 @@ export function AgentsPanel() {
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-end pt-1">
+                    {(mcpServers.length > 0 || builtinTools.length > 0) && (
+                      <div className="grid grid-cols-2 gap-3 pt-1 border-t border-white/[0.06] mt-1">
+                        <div>
+                          <div className="text-white/40 mb-1">MCP servers</div>
+                          {mcpServers.length === 0 && <div className="text-white/25 text-[11px]">None connected — see Settings.</div>}
+                          <div className="space-y-1">
+                            {mcpServers.map((s) => (
+                              <label key={s.name} className="flex items-center gap-1.5 text-white/60 cursor-pointer">
+                                <input type="checkbox" className="accent-indigo-500"
+                                  checked={cfg.mcp_servers.includes(s.name)}
+                                  onChange={() => toggleArrayField(role, "mcp_servers", s.name)} />
+                                {s.name} {!s.enabled && <span className="text-white/25">(disabled)</span>}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-white/40 mb-1">Tools</div>
+                          <div className="space-y-1">
+                            {builtinTools.map((t) => (
+                              <label key={t.name} className="flex items-center gap-1.5 text-white/60 cursor-pointer" title={t.description}>
+                                <input type="checkbox" className="accent-indigo-500"
+                                  checked={cfg.tools_enabled.includes(t.name)}
+                                  onChange={() => toggleArrayField(role, "tools_enabled", t.name)} />
+                                {t.name.replace(/_/g, " ")}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between pt-1">
+                      {!builtinRoles.includes(role) && !customRoles.find((r) => r.role === role)?.built_in ? (
+                        <Button size="sm" variant="outline" className="text-red-300 border-red-500/30" onClick={() => deleteRole(role)}>
+                          Delete role
+                        </Button>
+                      ) : <span />}
                       <Button size="sm" disabled={!dirty || savingRole === role} loading={savingRole === role} onClick={() => save(role)}>
                         Save
                       </Button>
@@ -567,11 +709,273 @@ const SECRET_FIELDS: { key: string; label: string; placeholder: string; group: s
   { key: "gcp_project_id", label: "GCP Project ID", placeholder: "my-project-123", group: "Gemini Enterprise Agent Platform" },
   { key: "gcp_location", label: "GCP Location", placeholder: "us-central1", group: "Gemini Enterprise Agent Platform" },
   { key: "gcp_service_account_json", label: "Service Account JSON (optional — paste the full key file contents)", placeholder: '{"type": "service_account", …}', group: "Gemini Enterprise Agent Platform", multiline: true },
+  { key: "perplexity_api_key", label: "Perplexity API Key", placeholder: "pplx-…", group: "Tools" },
 ];
-const SECRET_GROUPS = ["GitHub", "Native API keys", "Amazon Bedrock", "Gemini Enterprise Agent Platform", "Emergent"];
+const SECRET_GROUPS = ["GitHub", "Native API keys", "Amazon Bedrock", "Gemini Enterprise Agent Platform", "Emergent", "Tools"];
 
 type TestOutcome = "idle" | "testing" | "ok" | "error" | "not_configured" | "not_implemented";
 type TestState = { state: TestOutcome; detail?: string; latency_ms?: number };
+
+type McpServer = {
+  id: string;
+  name: string;
+  transport: "stdio" | "http";
+  command?: string | null;
+  args: string[];
+  url?: string | null;
+  env_keys: string[];
+  enabled: boolean;
+  preset?: string | null;
+  last_tool_count?: number | null;
+  last_checked_at?: string | null;
+  last_error?: string | null;
+};
+
+type McpPreset = {
+  label: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env_keys: string[];
+  description: string;
+};
+
+function NewMcpServerForm({ presets, onCreated }: { presets: Record<string, McpPreset>; onCreated: () => void }) {
+  const [mode, setMode] = useState<"preset" | "custom">(Object.keys(presets).length ? "preset" : "custom");
+  const [presetKey, setPresetKey] = useState<string>(Object.keys(presets)[0] || "");
+  const [name, setName] = useState("");
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const [transport, setTransport] = useState<"stdio" | "http">("stdio");
+  const [command, setCommand] = useState("");
+  const [args, setArgs] = useState("");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const preset = mode === "preset" ? presets[presetKey] : null;
+
+  async function submit() {
+    const finalName = (mode === "preset" ? name || presetKey : name).trim();
+    if (!finalName) {
+      toast.error("Give this server a name");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (mode === "preset" && preset) {
+        const missing = preset.env_keys.filter((k) => !envValues[k]?.trim());
+        if (missing.length) {
+          toast.error(`Missing required: ${missing.join(", ")}`);
+          setBusy(false);
+          return;
+        }
+        await devstudio.createMcpServer({
+          name: finalName, transport: preset.transport, command: preset.command,
+          args: preset.args || [], env: envValues, preset: presetKey,
+        });
+      } else {
+        if (!command.trim() && transport === "stdio") {
+          toast.error("A command is required for a stdio server");
+          setBusy(false);
+          return;
+        }
+        if (!url.trim() && transport === "http") {
+          toast.error("A URL is required for an http server");
+          setBusy(false);
+          return;
+        }
+        await devstudio.createMcpServer({
+          name: finalName, transport,
+          command: transport === "stdio" ? command.trim() : undefined,
+          args: transport === "stdio" ? args.split(/\s+/).filter(Boolean) : [],
+          url: transport === "http" ? url.trim() : undefined,
+          env: envValues,
+        });
+      }
+      toast.success(`Added MCP server "${finalName}"`);
+      setName("");
+      setEnvValues({});
+      setCommand("");
+      setArgs("");
+      setUrl("");
+      onCreated();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not add MCP server");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/[0.06] p-3 space-y-2.5 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium text-white/80">Add MCP server</div>
+        <div className="flex rounded-md border border-white/10 overflow-hidden text-[11px]">
+          <button type="button" onClick={() => setMode("preset")}
+            className={`px-2 py-1 ${mode === "preset" ? "bg-white/10 text-white" : "text-white/40"}`}>
+            Preset
+          </button>
+          <button type="button" onClick={() => setMode("custom")}
+            className={`px-2 py-1 ${mode === "custom" ? "bg-white/10 text-white" : "text-white/40"}`}>
+            Custom
+          </button>
+        </div>
+      </div>
+
+      {mode === "preset" ? (
+        <div className="space-y-2">
+          <Select value={presetKey}
+            options={Object.entries(presets).map(([key, p]) => ({ value: key, label: p.label }))}
+            onChange={(e) => setPresetKey(e.target.value)} />
+          {preset && (
+            <>
+              <div className="text-[11px] text-white/40">{preset.description}</div>
+              <Input value={name} onChange={(e) => setName(e.target.value)}
+                placeholder={`Name (defaults to "${presetKey}")`} />
+              {preset.env_keys.map((k) => (
+                <Input key={k} type="password" value={envValues[k] || ""}
+                  onChange={(e) => setEnvValues((v) => ({ ...v, [k]: e.target.value }))}
+                  placeholder={k} />
+              ))}
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Server name" />
+          <Select value={transport}
+            options={[{ value: "stdio", label: "stdio (command)" }, { value: "http", label: "http (streamable URL)" }]}
+            onChange={(e) => setTransport(e.target.value as "stdio" | "http")} />
+          {transport === "stdio" ? (
+            <>
+              <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="Command, e.g. npx" />
+              <Input value={args} onChange={(e) => setArgs(e.target.value)}
+                placeholder="Args, space-separated, e.g. -y @scope/some-mcp-server" />
+            </>
+          ) : (
+            <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/mcp" />
+          )}
+          <div className="text-[11px] text-white/35">
+            Optional env vars (e.g. an API token), one per line as KEY=value:
+          </div>
+          <Textarea rows={2} placeholder="TOKEN=…"
+            onChange={(e) => {
+              const parsed: Record<string, string> = {};
+              for (const line of e.target.value.split("\n")) {
+                const idx = line.indexOf("=");
+                if (idx > 0) parsed[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+              }
+              setEnvValues(parsed);
+            }} />
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <Button size="sm" disabled={busy} loading={busy} onClick={submit}>Add server</Button>
+      </div>
+    </div>
+  );
+}
+
+function McpServersTab() {
+  const [servers, setServers] = useState<McpServer[]>([]);
+  const [presets, setPresets] = useState<Record<string, McpPreset>>({});
+  const [formOpen, setFormOpen] = useState(false);
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; tools?: string[]; error?: string }>>({});
+
+  async function load() {
+    const [{ data: serverData }, { data: presetData }] = await Promise.all([
+      devstudio.listMcpServers(),
+      devstudio.listMcpPresets(),
+    ]);
+    setServers(serverData.servers);
+    setPresets(presetData.presets);
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function test(id: string) {
+    setTesting((t) => ({ ...t, [id]: true }));
+    try {
+      const { data } = await devstudio.testMcpServer(id);
+      setTestResults((r) => ({
+        ...r,
+        [id]: data.ok ? { ok: true, tools: (data.tools || []).map((t: any) => t.name) } : { ok: false, error: data.error },
+      }));
+      await load();
+    } catch (e: any) {
+      setTestResults((r) => ({ ...r, [id]: { ok: false, error: e?.response?.data?.detail || "Request failed" } }));
+    } finally {
+      setTesting((t) => ({ ...t, [id]: false }));
+    }
+  }
+
+  async function remove(server: McpServer) {
+    try {
+      await devstudio.deleteMcpServer(server.id);
+      toast.success(`Removed "${server.name}"`);
+      await load();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || "Could not remove server");
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[11px] text-white/40 flex items-start gap-1.5">
+        <Bot className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+        <span>
+          Any MCP (Model Context Protocol) server — presets for Memory (no credentials) and Notion,
+          or a fully custom stdio/http server. Assign servers to a role's tools in the Agents tab.
+          "Test" connects for real and lists the server's actual tools.
+        </span>
+      </div>
+
+      {servers.map((s) => {
+        const result = testResults[s.id];
+        return (
+          <div key={s.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="text-white/80 font-medium flex-1 truncate">{s.name}</span>
+              {s.preset && <Badge tone="neutral">{s.preset} preset</Badge>}
+              <Badge tone="neutral">{s.transport}</Badge>
+              {s.last_tool_count != null && !result && (
+                <Badge tone="success">{s.last_tool_count} tools</Badge>
+              )}
+              {result?.ok && <Badge tone="success">{result.tools?.length ?? 0} tools</Badge>}
+              {result && !result.ok && <Badge tone="danger">failed</Badge>}
+              {!result && s.last_error && <Badge tone="danger">failed</Badge>}
+              <Button size="sm" variant="outline" loading={!!testing[s.id]} onClick={() => test(s.id)}>
+                Test
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => remove(s)}>Remove</Button>
+            </div>
+            <div className="text-white/40 truncate">
+              {s.transport === "stdio" ? `${s.command} ${(s.args || []).join(" ")}` : s.url}
+              {s.env_keys.length ? ` · env: ${s.env_keys.join(", ")}` : ""}
+            </div>
+            {(result?.ok && result.tools?.length) ? (
+              <div className="text-white/40 truncate">tools: {result.tools.join(", ")}</div>
+            ) : null}
+            {((result && !result.ok && result.error) || (!result && s.last_error)) && (
+              <div className="text-red-400/80 truncate">{result?.error || s.last_error}</div>
+            )}
+          </div>
+        );
+      })}
+      {!servers.length && (
+        <EmptyState compact icon={Bot} title="No MCP servers yet" description="Add a preset or a custom server below." />
+      )}
+
+      {formOpen ? (
+        <NewMcpServerForm presets={presets} onCreated={() => { setFormOpen(false); load(); }} />
+      ) : (
+        <Button size="sm" variant="outline" onClick={() => setFormOpen(true)}>+ Add MCP server</Button>
+      )}
+    </div>
+  );
+}
 
 export function SettingsPanel() {
   const [caps, setCaps] = useState<any[]>([]);
@@ -642,6 +1046,7 @@ export function SettingsPanel() {
               </TabsTrigger>
               <TabsTrigger value="secrets">secrets {configuredCount ? `(${configuredCount})` : ""}</TabsTrigger>
               <TabsTrigger value="test">test models</TabsTrigger>
+              <TabsTrigger value="mcp">MCP servers</TabsTrigger>
             </TabsList>
 
             <TabsContent value="capabilities" className="space-y-1.5">
@@ -677,6 +1082,12 @@ export function SettingsPanel() {
                       if left blank, it falls back to Google's Application Default Credentials
                       (gcloud login or an attached GCP service account). A project ID is always
                       required; location defaults to us-central1.
+                    </div>
+                  )}
+                  {group === "Tools" && (
+                    <div className="text-[11px] text-white/40 -mt-1">
+                      Powers the perplexity_research built-in agent tool (Settings → Agents →
+                      per-role Tools). Only used when a role has that tool enabled.
                     </div>
                   )}
                   {SECRET_FIELDS.filter((f) => f.group === group).map((f) => (
@@ -764,6 +1175,10 @@ export function SettingsPanel() {
                   })}
                 </div>
               ))}
+            </TabsContent>
+
+            <TabsContent value="mcp">
+              <McpServersTab />
             </TabsContent>
           </Tabs>
         </div>

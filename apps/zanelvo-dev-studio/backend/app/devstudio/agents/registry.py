@@ -6,13 +6,18 @@ from __future__ import annotations
 from typing import Dict, List
 
 from ...db import get_db, utc_now_iso
-from ..models import AgentConfiguration, AgentRole
+from ..models import AgentConfiguration, AgentRole, BUILTIN_AGENT_ROLES
 from ..providers.registry import preset_for_role
+from ..services import custom_agent_service
 
-ROLES: List[AgentRole] = [
-    "supervisor", "repository_analyst", "planner", "design", "frontend", "backend",
-    "integration", "qa", "reviewer", "git",
-]
+ROLES: List[AgentRole] = list(BUILTIN_AGENT_ROLES)
+
+
+async def _all_roles() -> List[AgentRole]:
+    """Built-in roles plus every founder-defined/seeded custom role (see
+    services/custom_agent_service.py) — the full set that needs an AgentConfiguration."""
+    custom = [r.role for r in await custom_agent_service.list_roles()]
+    return ROLES + custom
 
 
 def _default_config(role: AgentRole, preset: str = "BALANCED") -> AgentConfiguration:
@@ -28,7 +33,7 @@ def _default_config(role: AgentRole, preset: str = "BALANCED") -> AgentConfigura
 
 async def ensure_defaults(preset: str = "BALANCED") -> None:
     db = get_db()
-    for role in ROLES:
+    for role in await _all_roles():
         existing = await db.ds_agent_configs.find_one({"role": role})
         if not existing:
             await db.ds_agent_configs.insert_one(_default_config(role, preset).to_mongo())
@@ -61,7 +66,7 @@ async def update_config(role: AgentRole, **fields) -> AgentConfiguration:
 
 
 async def apply_preset(preset: str) -> Dict[str, AgentConfiguration]:
-    for role in ROLES:
+    for role in await _all_roles():
         p = preset_for_role(preset, role)
         await update_config(role, primary_provider=p["primary_provider"], primary_model=p["primary_model"],
                              fallback_provider=p["fallback_provider"], fallback_model=p["fallback_model"])

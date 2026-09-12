@@ -37,6 +37,12 @@ class LLMResult:
     raw: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
     provider: Optional[str] = None
+    # Tool-calling loop fields (see LLMProvider.generate_with_tools) — unset for every other call.
+    # tool_calls: the model wants these executed, as [{"id": str, "name": str, "arguments": dict}];
+    # tool_loop_history: opaque, provider-specific conversation state — round-trip it back into the
+    # next generate_with_tools() call's `history` param unchanged; never inspect its shape.
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_loop_history: Optional[Any] = None
 
 
 class ProviderNotConfigured(Exception):
@@ -94,6 +100,28 @@ class LLMProvider(ABC):
     async def stream(self, *, system: str, prompt: str, model: str,
                       max_tokens: int = 4096) -> AsyncIterator[str]:
         ...
+
+    async def generate_with_tools(self, *, system: str, model: str, tools: List[Dict[str, Any]],
+                                   prompt: Optional[str] = None, history: Optional[Any] = None,
+                                   tool_results: Optional[List[Dict[str, Any]]] = None,
+                                   max_tokens: int = 4096) -> LLMResult:
+        """One turn of a bounded tool-calling loop (see agents/runner.py::call_with_tools for the
+        driving loop). `tools` is the canonical MCP tool shape: [{"name", "description",
+        "inputSchema"}] — built-in tools (ask_human, finish, ...) use the same shape.
+
+        First call: pass `prompt`, leave `history`/`tool_results` unset. If the returned LLMResult
+        has `.tool_calls`, execute them and call again with `prompt=None`,
+        `history=<the previous result's .tool_loop_history>`, and `tool_results=[{"id", "content"}]`
+        for each executed call. Keep looping until a result comes back with `.text` set and
+        `.tool_calls` empty — that's the model's final answer.
+
+        Not every provider implements this yet (see supports_tools()) — the base implementation
+        makes that explicit rather than silently returning an empty/fake result."""
+        raise ProviderNotConfigured(
+            f"{self.name} does not support tool calling yet. Use a provider whose "
+            "supports_tools(model) is True for this model, or drop the MCP tools/tool toggles "
+            "from this agent's configuration."
+        )
 
     def supports_tools(self, model: str) -> bool:
         return any(m.id == model and m.supports_tools for m in self.list_models())

@@ -27,3 +27,5 @@ async def ensure_indexes() -> None:
     await db.ds_git_operations.create_index([("task_id", 1), ("created_at", -1)])
     await db.ds_uploads.create_index("task_id")
     await db.ds_activity_events.create_index([("task_id", 1), ("created_at", 1)])
+    await db.ds_custom_agent_roles.create_index("role", unique=True)
+    await db.ds_mcp_servers.create_index("name", unique=True)

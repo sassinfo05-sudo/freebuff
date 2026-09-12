@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 
 from ..models import AgentConfiguration, PlanItem, Task
 from ..providers.registry import ModelRegistry
-from ..services import context_builder
+from ..services import context_builder, custom_agent_service
 from .runner import call_structured
 
 ANALYST_SYSTEM = (
@@ -27,12 +27,12 @@ ANALYST_SYSTEM = (
     "conventions (array of strings), summary (string, 2-4 sentences)."
 )
 
-PLANNER_SYSTEM = (
+_PLANNER_SYSTEM_TEMPLATE = (
     "You are the Planner for Zanelvo Dev Studio. Given a task request and a repository analysis, "
     "produce an actionable implementation plan. Never use vague plan items. Return JSON: "
-    "{\"items\": [{\"title\": str, \"description\": str, \"assigned_agent\": one of "
-    "['design','frontend','backend','integration'], \"relevant_files\": [str], "
-    "\"acceptance_criteria\": [str], \"verification_method\": str, \"depends_on\": [str]}]}. "
+    "{{\"items\": [{{\"title\": str, \"description\": str, \"assigned_agent\": one of "
+    "{roles}, \"relevant_files\": [str], "
+    "\"acceptance_criteria\": [str], \"verification_method\": str, \"depends_on\": [str]}}]}}. "
     "depends_on MUST be the exact title string of another item in this same plan that must "
     "complete first — never an index number or id. "
     "Every item MUST have concrete, testable acceptance_criteria and a verification_method "
@@ -50,6 +50,15 @@ _IMPLEMENTER_SYSTEMS = {
                    "provider integrations, environment variables, secret-safe implementation. "
                    "Secrets are read server-side only, never hardcoded or logged.",
 }
+
+
+async def _planner_system() -> str:
+    """The Planner's assigned_agent enum is built fresh per call — not a fixed constant — because
+    founders can add custom implementer roles (CustomAgentRoleConfig, category='implementer') at
+    any time via Settings, and the Planner must know about them to ever assign a plan item there."""
+    roles = list(_IMPLEMENTER_SYSTEMS.keys())
+    roles += [r.role for r in await custom_agent_service.list_roles() if r.category == "implementer"]
+    return _PLANNER_SYSTEM_TEMPLATE.format(roles=roles)
 
 IMPLEMENTER_JSON_CONTRACT = (
     "Return JSON: {\"summary\": str, \"file_operations\": [{"
@@ -95,7 +104,7 @@ async def create_plan(task: Task, analysis: Dict[str, Any], project_id: str,
         f"Repository analysis: {analysis}\n\nConventions on file: {ctx['conventions']}\n\n"
         "Produce the implementation plan now."
     )
-    result = await call_structured(registry, config, task.id, "planner", PLANNER_SYSTEM, prompt,
+    result = await call_structured(registry, config, task.id, "planner", await _planner_system(), prompt,
                                     action="Creating implementation plan")
     items = result.get("items") if isinstance(result, dict) else result
     if not isinstance(items, list) or not items:
@@ -106,8 +115,18 @@ async def create_plan(task: Task, analysis: Dict[str, Any], project_id: str,
 async def implement_plan_item(task: Task, plan_item: PlanItem, project_id: str, branch: str,
                                file_contents: Dict[str, str], registry: ModelRegistry,
                                config: AgentConfiguration) -> Dict[str, Any]:
-    role = plan_item.assigned_agent if plan_item.assigned_agent in _IMPLEMENTER_SYSTEMS else "backend"
-    system = _IMPLEMENTER_SYSTEMS[role] + "\n\n" + IMPLEMENTER_JSON_CONTRACT
+    role = plan_item.assigned_agent
+    if role in _IMPLEMENTER_SYSTEMS:
+        role_system = _IMPLEMENTER_SYSTEMS[role]
+    else:
+        custom = await custom_agent_service.get_role(role)
+        if custom and custom.category == "implementer":
+            role_system = custom.system_prompt
+        else:
+            # An unrecognized/deleted-since-planning role degrades to Backend rather than failing
+            # the whole plan item outright — matches the previous fixed-role fallback behavior.
+            role, role_system = "backend", _IMPLEMENTER_SYSTEMS["backend"]
+    system = role_system + "\n\n" + IMPLEMENTER_JSON_CONTRACT
     ctx = await context_builder.build_implementer_context(task, plan_item, project_id, branch, file_contents)
     prompt = (
         f"Plan item: {ctx['plan_item']}\n\nOriginal task request: {ctx['task_request']}\n\n"

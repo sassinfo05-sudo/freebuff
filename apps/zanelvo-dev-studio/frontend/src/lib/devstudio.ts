@@ -42,6 +42,20 @@ export const devstudio = {
   testProviderModel: (provider: string, model: string) =>
     api.post(`${base}/providers/test`, { provider, model }),
 
+  listBuiltinTools: () => api.get(`${base}/tools/builtin`),
+
+  listAgentRoles: () => api.get(`${base}/agents/roles`),
+  createAgentRole: (body: Record<string, unknown>) => api.post(`${base}/agents/roles`, body),
+  updateAgentRole: (role: string, body: Record<string, unknown>) => api.put(`${base}/agents/roles/${role}`, body),
+  deleteAgentRole: (role: string) => api.delete(`${base}/agents/roles/${role}`),
+
+  listMcpPresets: () => api.get(`${base}/mcp/presets`),
+  listMcpServers: () => api.get(`${base}/mcp/servers`),
+  createMcpServer: (body: Record<string, unknown>) => api.post(`${base}/mcp/servers`, body),
+  updateMcpServer: (id: string, body: Record<string, unknown>) => api.put(`${base}/mcp/servers/${id}`, body),
+  deleteMcpServer: (id: string) => api.delete(`${base}/mcp/servers/${id}`),
+  testMcpServer: (id: string) => api.post(`${base}/mcp/servers/${id}/test`),
+
   createTask: (body: Record<string, unknown>) => api.post(`${base}/tasks`, body),
   listTasks: (projectId?: string | null) => api.get(`${base}/tasks`, { params: { project_id: projectId } }),
   getTask: (id: string) => api.get(`${base}/tasks/${id}`),
