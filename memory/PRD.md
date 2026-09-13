@@ -36,3 +36,8 @@ Verified: login + `POST /agents/preset/{ECONOMICAL|BALANCED|MAX_QUALITY}` all ke
 
 ## Backlog / next
 - P2: optional migration if a founder had customized agent configs (this run reset defaults).
+
+## Bug fix (2026-06) — planner BLOCKED + execute_bash allowlist
+- Root cause: `generate_with_tools` sent `max_tokens` (rejected by gpt-6-astra/gpt-5.6-terra) with no param-drop retry, and OpenAI reasoning models reject function tools unless reasoning_effort='none' → generic PROVIDER_ERROR mislabeled as "no runtime balance".
+- Fixes: emergent_provider.py adds reasoning_effort='none' for OpenAI-family + bounded param-drop retry; removed unusable gpt-6-astra from presets (registry.py); command_policy.py allowlists ls/tree/find/wc/grep/rg/pwd + read-only git subcommands.
+- Verified by testing_agent: live task advanced BLOCKED→IMPLEMENTING on emergent/gpt-5.6-terra; 8/8 command-policy tests pass; preset/config invariants hold (all emergent, no gpt-6-astra).

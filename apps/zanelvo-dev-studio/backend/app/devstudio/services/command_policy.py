@@ -24,6 +24,13 @@ ALLOWED_PREFIXES: List[List[str]] = [
     ["pip", "install"], ["pip3", "install"],
     ["npx", "playwright"], ["npx", "tsc"],
     ["git", "status"], ["git", "diff"], ["git", "log"],
+    # Read-only repo inspection an agent needs to explore a workspace (see runner.py's execute_bash
+    # tool). All non-mutating: they list/print but never change the tree. Mutating git (push/reset
+    # --hard/clean -f) is still refused by DENY_PATTERNS below regardless of anything here.
+    ["git", "ls-files"], ["git", "ls-tree"], ["git", "show"], ["git", "rev-parse"],
+    ["git", "branch"], ["git", "remote"], ["git", "blame"], ["git", "cat-file"],
+    ["git", "rev-list"], ["git", "shortlog"], ["git", "describe"], ["git", "tag"],
+    ["ls"], ["tree"], ["find"], ["wc"], ["grep"], ["rg"], ["pwd"],
     # --- JVM builds (Java/Kotlin projects — e.g. Bukkit/Spigot/Paper Minecraft plugins) ---
     # .cmd/.bat entries are the Windows wrapper scripts (see testing_service.py's platform check —
     # ./mvnw/./gradlew are Unix shell scripts that don't run on Windows at all).

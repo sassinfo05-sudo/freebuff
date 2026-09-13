@@ -141,14 +141,14 @@ MODEL_PRESETS: Dict[str, Dict[str, Dict[str, Optional[str]]]] = {
         "default": _em(_OPUS_5, _FABLE),                       # backend/integration/qa/git etc.
         "supervisor": _em(_FABLE, _OPUS_5),
         "repository_analyst": _em(_GEM_PRO, _OPUS_5),
-        "planner": _em(_GPT_MAX, _FABLE),
+        "planner": _em(_GPT_BAL, _FABLE),
         "design": _em(_GEM_PRO, _OPUS_5),
         "vision": _em(_GEM_PRO, _OPUS_5),
         "frontend": _em(_FABLE, _OPUS_5),
         "backend": _em(_OPUS_5, _FABLE),
         "integration": _em(_OPUS_5, _FABLE),
-        "qa": _em(_GPT_MAX, _OPUS_5),
-        "reviewer": _em(_GPT_MAX, _OPUS_5),
+        "qa": _em(_GPT_BAL, _OPUS_5),
+        "reviewer": _em(_GPT_BAL, _OPUS_5),
         "git": _em(_GPT_BAL, _SONNET_5),
     },
 }

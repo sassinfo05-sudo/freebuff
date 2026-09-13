@@ -18,8 +18,17 @@ def test_allows_jvm_build_and_archive_commands():
         assert cp.is_allowed(cmd), f"expected allowed: {cmd}"
 
 
+def test_allows_readonly_repo_inspection_commands():
+    # Read-only exploration an agent needs to look around a workspace — ls/tree/find and the
+    # non-mutating git subcommands. These must NOT be blocked (the reported bug: 'ls -la' and
+    # 'git ls-files' were refused, stalling the repository-analysis step).
+    for cmd in ["ls -la", "tree -L 2", "find . -name '*.py'", "git ls-files", "git ls-tree HEAD",
+                "git show HEAD --stat", "git rev-parse HEAD", "git branch -a", "grep -rn foo src"]:
+        assert cp.is_allowed(cmd), f"expected allowed: {cmd}"
+
+
 def test_denies_commands_not_on_the_allowlist():
-    for cmd in ["curl http://example.com", "node server.js", "cat /etc/hosts", "ls -la"]:
+    for cmd in ["curl http://example.com", "node server.js", "cat /etc/hosts"]:
         assert not cp.is_allowed(cmd), f"expected denied (not allow-listed): {cmd}"
 
 

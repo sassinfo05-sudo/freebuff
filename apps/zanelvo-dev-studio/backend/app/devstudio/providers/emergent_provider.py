@@ -340,23 +340,65 @@ class EmergentUniversalKeyProvider(LLMProvider):
         # faithful than re-deriving a messages array, and this provider is only ever called
         # in-process, never (de)serialized, so an opaque object is safe here.
         _LlmChat, UserMessage, _ImageContent, ChatError = _sdk()
-        chat = history if history is not None else self._chat(system=system, model=model)
         emergent_tools = [
             {"type": "function", "function": {"name": t["name"], "description": t.get("description", ""),
                                                "parameters": t["inputSchema"]}}
             for t in tools
         ]
-        chat = chat.with_tools(emergent_tools).with_params(max_tokens=self._floor_tokens(max_tokens))
+        # Same adaptive param-dropping as _send(): newer Universal-Key models reject params older
+        # ones accept (e.g. GPT-6 Astra / GPT-5.6 Terra reject `max_tokens` — "use
+        # max_completion_tokens instead"), and litellm's own drop_params doesn't catch them through
+        # the proxy. Without this retry EVERY tool-loop call to those models hard-fails as a generic
+        # PROVIDER_ERROR — which is exactly what broke the Planner/Reviewer/QA roles once every
+        # agent got tools enabled.
+        #
+        # OpenAI-family reasoning models ALSO reject function tools whenever reasoning_effort is
+        # anything but "none" on the Universal Key's /v1/chat/completions route ("Function tools
+        # with reasoning_effort are not supported ... set reasoning_effort to 'none'"), and the
+        # proxy applies a non-none default when the param is omitted. So force "none" for OpenAI
+        # here; if a given model doesn't accept the param at all (litellm rejects it client-side),
+        # the same drop-retry removes it.
+        #
+        # A continuation turn (tool_results on a stateful chat, no new user message) is retried on
+        # the SAME chat — a failed acompletion appends nothing when there's no new user message. A
+        # fresh turn (a new user prompt) is rebuilt each retry, since a failed send leaves the
+        # just-appended user message behind (mirrors _send()).
+        params: Dict[str, Any] = {"max_tokens": self._floor_tokens(max_tokens)}
+        if self._family(model) == "openai":
+            params["reasoning_effort"] = "none"
+        is_continuation = tool_results is not None
+        base_chat = None
+        if is_continuation:
+            base_chat = (history if history is not None else self._chat(system=system, model=model))
+            base_chat = base_chat.with_tools(emergent_tools)
+            for r in tool_results:
+                base_chat.add_tool_result(r["id"], r["content"])
+
+        last: Optional[Exception] = None
+        resp = None
+        chat = None
         t0 = time.monotonic()
-        try:
-            if tool_results:
-                for r in tool_results:
-                    chat.add_tool_result(r["id"], r["content"])
-                resp = await chat.send_message_with_tools()
+        for _ in range(len(params) + 1):
+            if is_continuation:
+                chat = base_chat.with_params(**params) if params else base_chat
             else:
-                resp = await chat.send_message_with_tools(UserMessage(text=prompt))
-        except ChatError as e:
-            raise _normalize_error(e) from e
+                chat = self._chat(system=system, model=model).with_tools(emergent_tools)
+                if params:
+                    chat = chat.with_params(**params)
+            try:
+                if is_continuation:
+                    resp = await chat.send_message_with_tools()
+                else:
+                    resp = await chat.send_message_with_tools(UserMessage(text=prompt))
+                break
+            except ChatError as e:
+                last = e
+                drop = _unsupported_param(str(e), params)
+                if drop is None:
+                    raise _normalize_error(e) from e
+                params.pop(drop, None)
+        if resp is None:
+            raise _normalize_error(last) from last  # pragma: no cover
         dur = int((time.monotonic() - t0) * 1000)
         tool_calls = (
             [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in resp.tool_calls]
