@@ -50,7 +50,10 @@ that need them, without changing what ships to everyone else.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..models import AgentConfiguration
 
 from .anthropic_provider import AnthropicProvider
 from .base import LLMProvider, ModelInfo
@@ -69,46 +72,84 @@ _PROVIDER_CLASSES: Dict[str, Type[LLMProvider]] = {
     "emergent": EmergentUniversalKeyProvider,
 }
 
-_ANTHROPIC_ECONOMICAL = {"primary_provider": "anthropic", "primary_model": "claude-haiku-4-5",
-                          "fallback_provider": "anthropic", "fallback_model": "claude-haiku-4-5"}
-_ANTHROPIC_BALANCED = {"primary_provider": "anthropic", "primary_model": "claude-sonnet-5",
-                        "fallback_provider": "anthropic", "fallback_model": "claude-haiku-4-5"}
-_ANTHROPIC_MAX = {"primary_provider": "anthropic", "primary_model": "claude-opus-5",
-                   "fallback_provider": "anthropic", "fallback_model": "claude-sonnet-5"}
-# MAX_QUALITY only, for roles where Fable 5.1's agentic strength outweighs its lower pass@1 and
-# there's no legitimate-code safety-block risk (see module docstring). Falls back to Opus 5, not
-# Fable's own internal Opus-4.8 fallback, so a block still lands on this tier's best model.
-_ANTHROPIC_MAX_FABLE = {"primary_provider": "anthropic", "primary_model": "claude-fable-5-1",
-                         "fallback_provider": "anthropic", "fallback_model": "claude-opus-5"}
+# Every preset routes through the Emergent Universal Key (provider "emergent") — one key that
+# serves the OpenAI, Anthropic AND Gemini families (see emergent_provider._CATALOG). The three
+# presets therefore never CHANGE the provider (it's always "emergent", with automatic fallback to
+# any other key that happens to be configured — see auto_attempts); they only pick the best MODEL
+# for each role. The picks are deliberately cross-family, matched to each role's real strength
+# rather than defaulting everything to one vendor:
+#   - Gemini (huge multimodal context) -> design, vision, repository_analyst
+#   - GPT (strong independent reasoning) -> planner, qa, reviewer
+#   - Claude (agentic coding / tool use) -> supervisor, frontend, backend, integration
+# Model ids below are the exact Universal-Key catalog ids from emergent_provider._CATALOG.
+
+# OpenAI family
+_GPT_MINI = "gpt-5.4-mini"
+_GPT_GEN = "gpt-5.4"
+_GPT_BAL = "gpt-5.6-terra"
+_GPT_MAX = "gpt-6-astra"
+# Anthropic family
+_SONNET_46 = "claude-sonnet-4-6"
+_SONNET_5 = "claude-sonnet-5"
+_OPUS_5 = "claude-opus-5"
+_FABLE = "claude-fable-5-1"
+# Gemini family
+_GEM_PRO = "gemini-3.1-pro-preview"
+_GEM_FLASH = "gemini-3-flash-preview"
+_GEM_FLASH_25 = "gemini-2.5-flash"
+
+
+def _em(primary_model: str, fallback_model: str) -> Dict[str, Optional[str]]:
+    """A preset entry — provider is always Emergent (the Universal Key); only the model varies."""
+    return {"primary_provider": "emergent", "primary_model": primary_model,
+            "fallback_provider": "emergent", "fallback_model": fallback_model}
+
 
 # Global presets. Each maps agent role -> (primary_provider, primary_model, fallback_provider,
-# fallback_model). Roles not listed fall back to the tier's "default" entry.
+# fallback_model). Roles not listed fall back to the tier's "default" entry. primary_provider is
+# always "emergent" — the preset buttons change the model, never the provider.
 MODEL_PRESETS: Dict[str, Dict[str, Dict[str, Optional[str]]]] = {
     "ECONOMICAL": {
-        "default": _ANTHROPIC_ECONOMICAL,
-        "supervisor": _ANTHROPIC_BALANCED,  # orchestration judgment is worth one tier up even here
-        "design": {"primary_provider": "gemini", "primary_model": "gemini-3.1-flash-lite",
-                   "fallback_provider": "anthropic", "fallback_model": "claude-haiku-4-5"},
-        "reviewer": _ANTHROPIC_ECONOMICAL,  # cross-provider review is a quality spend, not a
-                                              # cost-tier default — kept same-provider here
+        "default": _em(_GPT_MINI, _SONNET_46),
+        "supervisor": _em(_SONNET_46, _GPT_BAL),
+        "repository_analyst": _em(_GEM_FLASH_25, _GEM_PRO),   # 1M-ctx repo scan, cheap
+        "planner": _em(_GPT_GEN, _SONNET_46),
+        "design": _em(_GEM_FLASH_25, _GEM_FLASH),
+        "vision": _em(_GEM_FLASH_25, _GEM_PRO),
+        "frontend": _em(_SONNET_46, _GPT_MINI),
+        "backend": _em(_SONNET_46, _GPT_MINI),
+        "integration": _em(_SONNET_46, _GPT_MINI),
+        "qa": _em(_GPT_MINI, _SONNET_46),
+        "reviewer": _em(_GPT_MINI, _SONNET_46),               # cross-family review
+        "git": _em(_GEM_FLASH, _GPT_MINI),
     },
     "BALANCED": {
-        "default": _ANTHROPIC_BALANCED,
-        "design": {"primary_provider": "gemini", "primary_model": "gemini-3.1-pro-preview",
-                   "fallback_provider": "anthropic", "fallback_model": "claude-sonnet-5"},
-        "reviewer": {"primary_provider": "openai", "primary_model": "gpt-5.6-terra",
-                     "fallback_provider": "anthropic", "fallback_model": "claude-sonnet-5"},
+        "default": _em(_SONNET_5, _GPT_BAL),
+        "supervisor": _em(_FABLE, _SONNET_5),
+        "repository_analyst": _em(_GEM_PRO, _SONNET_5),
+        "planner": _em(_GPT_BAL, _SONNET_5),
+        "design": _em(_GEM_PRO, _SONNET_5),
+        "vision": _em(_GEM_PRO, _SONNET_5),
+        "frontend": _em(_SONNET_5, _GPT_BAL),
+        "backend": _em(_SONNET_5, _OPUS_5),
+        "integration": _em(_SONNET_5, _OPUS_5),
+        "qa": _em(_GPT_BAL, _SONNET_5),
+        "reviewer": _em(_GPT_BAL, _SONNET_5),
+        "git": _em(_GEM_FLASH, _SONNET_5),
     },
     "MAX_QUALITY": {
-        "default": _ANTHROPIC_MAX,  # backend, integration, qa, git land here — Opus 5
-        "supervisor": _ANTHROPIC_MAX_FABLE,
-        "repository_analyst": _ANTHROPIC_MAX_FABLE,
-        "planner": _ANTHROPIC_MAX_FABLE,
-        "frontend": _ANTHROPIC_MAX_FABLE,
-        "design": {"primary_provider": "gemini", "primary_model": "gemini-3.1-pro-preview",
-                   "fallback_provider": "anthropic", "fallback_model": "claude-opus-5"},
-        "reviewer": {"primary_provider": "openai", "primary_model": "gpt-6-astra",
-                     "fallback_provider": "anthropic", "fallback_model": "claude-opus-5"},
+        "default": _em(_OPUS_5, _FABLE),                       # backend/integration/qa/git etc.
+        "supervisor": _em(_FABLE, _OPUS_5),
+        "repository_analyst": _em(_GEM_PRO, _OPUS_5),
+        "planner": _em(_GPT_MAX, _FABLE),
+        "design": _em(_GEM_PRO, _OPUS_5),
+        "vision": _em(_GEM_PRO, _OPUS_5),
+        "frontend": _em(_FABLE, _OPUS_5),
+        "backend": _em(_OPUS_5, _FABLE),
+        "integration": _em(_OPUS_5, _FABLE),
+        "qa": _em(_GPT_MAX, _OPUS_5),
+        "reviewer": _em(_GPT_MAX, _OPUS_5),
+        "git": _em(_GPT_BAL, _SONNET_5),
     },
 }
 
@@ -131,42 +172,33 @@ _DEFAULT_MODEL_BY_PROVIDER: Dict[str, str] = {
     "emergent": "claude-sonnet-5",
 }
 
-# Global cascade order for providers the role's own preset doesn't mention — native API-key
-# providers first (the common case), cloud-account providers and Emergent last, since those need
-# extra setup (AWS/GCP credentials, a separate Universal Key) a founder is less likely to have
-# configured incidentally.
-_AUTO_FALLBACK_ORDER = ["anthropic", "gemini", "openai", "bedrock", "gemini_enterprise", "emergent"]
+# Global cascade order for the automatic-fallback path. Emergent (the Universal Key) is ALWAYS the
+# main provider — it's the one key that serves every model family — followed by any native
+# per-vendor key, then the cloud-account providers, if a founder happens to have those configured
+# too. auto_attempts() below always tries Emergent first and only falls through to these when a
+# call to Emergent itself can't be made or fails.
+_AUTO_FALLBACK_ORDER = ["emergent", "anthropic", "gemini", "openai", "bedrock", "gemini_enterprise"]
 
 
-def auto_attempts(role: str, registry: "ModelRegistry", preset: str = "BALANCED") -> List[Tuple[str, str]]:
-    """Builds a primary->fallback->...  attempt list purely from which providers actually have a
-    real credential configured (registry.is_configured), for AgentConfiguration.auto_provider=True.
+def auto_attempts(config: "AgentConfiguration", registry: "ModelRegistry") -> List[Tuple[str, str]]:
+    """Builds the primary->fallback->... attempt list for AgentConfiguration.auto_provider=True.
 
-    Order: the role's own BALANCED-preset provider(s) first if configured (preserving this
-    project's existing per-role curation — e.g. Design still prefers Gemini, Reviewer still prefers
-    OpenAI, when those keys are set), then every other configured provider in a fixed general
-    order. Returns [] if literally no provider has a credential configured at all — the caller
-    turns that into a clear "requires_credentials" AgentStepFailed rather than trying anything."""
-    role_preset = preset_for_role(preset, role)
-    ordered_candidates: List[str] = []
-    for key in ("primary_provider", "fallback_provider"):
-        name = role_preset.get(key)
-        if name and name not in ordered_candidates:
-            ordered_candidates.append(name)
-    for name in _AUTO_FALLBACK_ORDER:
-        if name not in ordered_candidates:
-            ordered_candidates.append(name)
-
+    Emergent is always the main attempt (using this role's own curated model, so the preset's
+    per-role model choice is still honored even in auto mode), then every OTHER provider that
+    actually has a real credential configured (registry.is_configured), in a fixed order. Returns
+    [] if no provider has a credential at all — the caller turns that into a clear
+    "requires_credentials" failure rather than trying anything."""
     attempts: List[Tuple[str, str]] = []
-    for name in ordered_candidates:
-        if not registry.is_configured(name):
+    primary = config.primary_provider or "emergent"
+    # The role's own curated model runs first on its primary provider (Emergent for every preset).
+    if registry.is_configured(primary) and config.primary_model:
+        attempts.append((primary, config.primary_model))
+    for name in _AUTO_FALLBACK_ORDER:
+        if name == primary or not registry.is_configured(name):
             continue
-        model = None
-        if role_preset.get("primary_provider") == name:
-            model = role_preset.get("primary_model")
-        elif role_preset.get("fallback_provider") == name:
-            model = role_preset.get("fallback_model")
-        attempts.append((name, model or _DEFAULT_MODEL_BY_PROVIDER.get(name, "")))
+        model = _DEFAULT_MODEL_BY_PROVIDER.get(name, "")
+        if model:
+            attempts.append((name, model))
     return attempts
 
 

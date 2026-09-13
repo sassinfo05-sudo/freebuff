@@ -91,7 +91,7 @@ def _attempts_for(config: AgentConfiguration, registry: ModelRegistry) -> List[T
     - auto_provider=False (default): the existing explicit primary -> fallback behavior, unchanged.
     """
     if config.auto_provider:
-        attempts = auto_attempts(config.role, registry)
+        attempts = auto_attempts(config, registry)
         if not attempts:
             raise AgentStepFailed(
                 f"{config.role}: automatic provider selection is on, but no provider has a "

@@ -208,3 +208,14 @@ async def tools_for_servers(server_names: List[str]) -> List[Dict[str, Any]]:
             tagged["_mcp_server"] = name
             out.append(tagged)
     return out
+
+
+async def seed_memory_server() -> None:
+    """Ensure the credential-free 'memory' knowledge-graph MCP server exists and is enabled, so
+    every agent has persistent cross-task memory out of the box. Idempotent: a no-op if a server
+    by that name already exists (created here or by the founder)."""
+    if await get_server_by_name("memory"):
+        return
+    p = PRESETS["memory"]
+    await create_server(name="memory", transport=p["transport"], command=p["command"],
+                         args=list(p["args"]), env={}, preset="memory", enabled=True)

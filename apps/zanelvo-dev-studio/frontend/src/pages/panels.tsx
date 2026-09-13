@@ -405,8 +405,11 @@ export function AgentsPanel() {
       <div className="flex-1 overflow-y-auto">
         <div className="p-6 max-w-3xl mx-auto space-y-2.5">
           <div className="text-[11px] text-white/40 -mt-1 mb-1">
-            Presets set every role at once. Expand a role to override it individually — including
-            its fallback, MCP servers, and tools — without leaving the preset for everything else.
+            Presets pick the best <span className="text-white/60">model</span> per role (a
+            cross-family mix of GPT, Claude and Gemini) — they never change the provider. Every
+            role always runs on the Emergent Universal Key, with automatic fallback to any other
+            key you've configured, and every MCP server and tool stays enabled. Expand a role to
+            override it individually without leaving the preset for everything else.
           </div>
 
           {newRoleOpen && <NewCustomRoleForm onCreated={() => { setNewRoleOpen(false); load(); }} />}

@@ -113,6 +113,17 @@ async def _on_startup():
         await ensure_indexes()
     except Exception as e:  # noqa: BLE001
         logger.warning("Index creation failed (will retry on next call that needs them): %s", e)
+    try:
+        # Seed the credential-free memory MCP server and every agent's defaults up front so all
+        # agents come up with auto-provider (Emergent main), every MCP server and every built-in
+        # tool enabled — see agents/registry.py and services/mcp_service.py.
+        from app.devstudio.agents import registry as agent_registry
+        from app.devstudio.services import custom_agent_service, mcp_service
+        await custom_agent_service.ensure_seed_roles()
+        await mcp_service.seed_memory_server()
+        await agent_registry.ensure_defaults()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Agent/MCP default seeding failed (will retry lazily on first use): %s", e)
 
 
 @app.on_event("shutdown")

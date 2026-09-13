@@ -493,6 +493,8 @@ async def create_mcp_server(body: MCPServerBody, user: str = Depends(require_dev
     if await mcp_service.get_server_by_name(body.name):
         raise HTTPException(400, f"An MCP server named '{body.name}' already exists")
     server = await mcp_service.create_server(**body.model_dump())
+    if server.enabled:
+        await agent_registry.add_mcp_server_to_all(server.name)
     d = server.model_dump()
     d["env_keys"] = list(d.pop("env", {}).keys())
     return d

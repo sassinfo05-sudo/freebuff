@@ -3,7 +3,7 @@ reasoning level, max attempts, automatic fallback), seeded with defaults and ove
 or wholesale via a global preset (ECONOMICAL/BALANCED/MAX_QUALITY)."""
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ...db import get_db, utc_now_iso
 from ..models import AgentConfiguration, AgentRole, BUILTIN_AGENT_ROLES
@@ -11,6 +11,19 @@ from ..providers.registry import preset_for_role
 from ..services import custom_agent_service
 
 ROLES: List[AgentRole] = list(BUILTIN_AGENT_ROLES)
+
+
+def _all_builtin_tools() -> List[str]:
+    """Every built-in tool key (runner.BUILTIN_TOOLS). Imported lazily to avoid a circular import
+    at module load (runner imports this registry indirectly)."""
+    from .runner import BUILTIN_TOOLS
+    return list(BUILTIN_TOOLS.keys())
+
+
+async def _all_mcp_server_names() -> List[str]:
+    """Names of every enabled connected MCP server — every agent gets them all by default."""
+    from ..services import mcp_service
+    return [s.name for s in await mcp_service.list_servers() if s.enabled]
 
 # Default tools_enabled per role. Deliberately conservative: only roles whose primary provider is
 # Anthropic across EVERY preset (see providers/registry.py MODEL_PRESETS) get tools by default,
@@ -43,15 +56,22 @@ async def _all_roles() -> List[AgentRole]:
     return ROLES + custom
 
 
-def _default_config(role: AgentRole, preset: str = "BALANCED") -> AgentConfiguration:
+def _default_config(role: AgentRole, preset: str = "BALANCED",
+                     mcp_servers: Optional[List[str]] = None) -> AgentConfiguration:
     p = preset_for_role(preset, role)
     return AgentConfiguration(
         role=role, enabled=True,
         primary_provider=p["primary_provider"], primary_model=p["primary_model"],
         fallback_provider=p["fallback_provider"], fallback_model=p["fallback_model"],
-        reasoning_level="medium" if role in ("planner", "reviewer") else None,
+        reasoning_level="high" if preset == "MAX_QUALITY" else (
+            "medium" if role in ("planner", "reviewer") else None),
         max_attempts=2, automatic_fallback=True,
-        tools_enabled=list(_DEFAULT_TOOLS_BY_ROLE.get(role, [])),
+        # Emergent Universal Key is always the main provider, with automatic fallback to any other
+        # configured key — see providers/registry.py::auto_attempts.
+        auto_provider=True,
+        # Every agent gets every MCP server and every built-in tool by default.
+        mcp_servers=list(mcp_servers or []),
+        tools_enabled=_all_builtin_tools(),
     )
 
 
@@ -61,16 +81,18 @@ async def ensure_defaults(preset: str = "BALANCED") -> None:
     # index on `role` — two calls can both see "missing" and both insert, and the loser gets an
     # unhandled DuplicateKeyError. $setOnInsert via upsert is atomic, so a duplicate is a no-op.
     db = get_db()
+    mcp_servers = await _all_mcp_server_names()
     for role in await _all_roles():
         await db.ds_agent_configs.update_one(
-            {"role": role}, {"$setOnInsert": _default_config(role, preset).to_mongo()}, upsert=True)
+            {"role": role},
+            {"$setOnInsert": _default_config(role, preset, mcp_servers).to_mongo()}, upsert=True)
 
 
 async def get_config(role: AgentRole) -> AgentConfiguration:
     db = get_db()
     doc = await db.ds_agent_configs.find_one({"role": role})
     if not doc:
-        cfg = _default_config(role)
+        cfg = _default_config(role, mcp_servers=await _all_mcp_server_names())
         await db.ds_agent_configs.update_one(
             {"role": role}, {"$setOnInsert": cfg.to_mongo()}, upsert=True)
         # Re-fetch regardless of whether this call or a concurrent one actually won the insert —
@@ -95,30 +117,30 @@ async def update_config(role: AgentRole, **fields) -> AgentConfiguration:
     return await get_config(role)
 
 
+async def add_mcp_server_to_all(name: str) -> None:
+    """Enable a (newly connected) MCP server on every agent — keeps 'all MCP servers enabled for
+    all agents' true as servers are added later, not just at seed time. $addToSet avoids dupes."""
+    await ensure_defaults()
+    await get_db().ds_agent_configs.update_many(
+        {}, {"$addToSet": {"mcp_servers": name}, "$set": {"updated_at": utc_now_iso()}})
+
+
 async def apply_preset(preset: str) -> Dict[str, AgentConfiguration]:
-    extra = preset_extra_fields(preset)
+    """Applies a global preset to every role. The preset only ever changes the MODEL per role —
+    the provider stays Emergent (the Universal Key) for everyone, auto-provider stays on, and every
+    MCP server + built-in tool stays enabled. So the ECONOMICAL/BALANCED/MAX_QUALITY buttons pick
+    the quality/cost tier without ever switching providers or disabling any agent capability."""
+    mcp_servers = await _all_mcp_server_names()
+    all_tools = _all_builtin_tools()
     for role in await _all_roles():
         p = preset_for_role(preset, role)
-        await update_config(role, primary_provider=p["primary_provider"], primary_model=p["primary_model"],
-                             fallback_provider=p["fallback_provider"], fallback_model=p["fallback_model"],
-                             **extra)
+        await update_config(
+            role,
+            primary_provider=p["primary_provider"], primary_model=p["primary_model"],
+            fallback_provider=p["fallback_provider"], fallback_model=p["fallback_model"],
+            auto_provider=True, automatic_fallback=True,
+            mcp_servers=mcp_servers, tools_enabled=all_tools,
+            reasoning_level="high" if preset == "MAX_QUALITY" else (
+                "medium" if role in ("planner", "reviewer") else None),
+        )
     return await list_configs()
-
-
-def preset_extra_fields(preset: str) -> Dict[str, object]:
-    """Non-model per-role overrides a preset applies on top of provider/model selection.
-
-    MAX_QUALITY turns every agent all the way up: every built-in tool enabled and reasoning_level
-    "high", so the most-expensive tier also gives each role its fullest capability (tool use +
-    maximum reasoning), not just its strongest model. The other presets leave tools_enabled and
-    reasoning_level untouched (the conservative per-role defaults from _DEFAULT_TOOLS_BY_ROLE set
-    at seed time still apply) — returned as an empty dict here.
-
-    Note: design/reviewer keep their Gemini/OpenAI primary at MAX_QUALITY; those SDKs don't
-    implement the tool-calling loop, so their tool calls resolve on the Anthropic fallback (or,
-    under auto_provider, on Emergent) — a deliberate, documented tradeoff of "all agents, all
-    tools", not a silent failure."""
-    if preset == "MAX_QUALITY":
-        from .runner import BUILTIN_TOOLS
-        return {"tools_enabled": list(BUILTIN_TOOLS.keys()), "reasoning_level": "high"}
-    return {}
